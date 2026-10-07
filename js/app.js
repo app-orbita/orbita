@@ -46,6 +46,12 @@ const app = $('#app');
 
 /* ============================== Arranque ============================== */
 (async function boot() {
+  if (db.MISCONFIG) {
+    app.innerHTML = `<main class="login"><div class="login-card"><div class="brand big"><span class="logo"></span>Órbita</div>
+      <p><b>La app no está conectada a la base de datos.</b></p>
+      <p class="muted">Falta completar <code>js/config.js</code> en GitHub. No cargues nada hasta que esté resuelto: avisale a Uriel.</p></div></main>`;
+    return;
+  }
   try {
     await db.init();
     S.user = await db.currentUser();
@@ -535,6 +541,7 @@ function viewPerfil() {
             <button class="btn soft" data-action="change-pw">Actualizar contraseña</button>
           </div>
         </div>
+        ${dataCard()}
         ${shortcutCard()}
         <div class="card">
           <div class="card-head"><h2>Sesión</h2></div>
@@ -625,7 +632,7 @@ function viewIdeaFolder(f) {
       <footer>
         ${f.shared ? `<span class="by" title="Agregada por ${esc(personName(i.user_id))}">${personAvatar(i.user_id)}</span>` : ''}
         <small>${i.created_at ? relDay(iso(new Date(i.created_at))) : ''}</small>
-        ${i.url ? `<a class="btn soft sm" href="${esc(i.url)}" target="_blank" rel="noopener">${icon('link', 14)} Abrir</a>` : ''}
+        ${/^https?:\/\//i.test(i.url || '') ? `<a class="btn soft sm" href="${esc(i.url)}" target="_blank" rel="noopener noreferrer">${icon('link', 14)} Abrir</a>` : ''}
       </footer>
     </article>`;
   };
@@ -668,6 +675,28 @@ function ideaForm(i = {}) {
     },
     onDelete: i.id ? () => del('ideas', i.id) : null,
   });
+}
+
+/* ---------- Mis datos: estado de la nube y copia de seguridad ---------- */
+const BACKUP_TABLES = ['items', 'notes', 'movements', 'investments', 'recurring', 'workload', 'idea_folders', 'ideas', 'accounts', 'month_closings'];
+function dataCard() {
+  const n = BACKUP_TABLES.reduce((s, t) => s + S[t].filter((r) => !r.user_id || r.user_id === S.user.id).length, 0);
+  return `<div class="card">
+    <div class="card-head"><h2>Mis datos</h2></div>
+    ${db.DEMO ? `<p class="status bad">Modo prueba: los datos NO se guardan en la nube</p>`
+      : `<p><span class="status ok">${icon('check', 14)} Guardado en la nube</span></p>
+         <p class="muted small" style="margin-top:8px">${n} registros tuyos en la base de datos. Se ven igual desde cualquier dispositivo.</p>`}
+    <button class="btn soft sm" data-action="backup" style="margin-top:10px">${icon('upload', 15)} Descargar copia de mis datos</button>
+  </div>`;
+}
+function downloadBackup() {
+  const datos = {};
+  BACKUP_TABLES.forEach((t) => { datos[t] = S[t].filter((r) => !r.user_id || r.user_id === S.user.id); });
+  const blob = new Blob([JSON.stringify({ app: 'Órbita', usuario: S.user.email, fecha: new Date().toISOString(), datos }, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = `orbita-${(S.user.email || 'datos').split('@')[0]}-${todayIso()}.json`;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  toast('Copia descargada');
 }
 
 /* ---------- Atajo del iPhone ---------- */
@@ -1280,6 +1309,7 @@ document.addEventListener('click', async (e) => {
       break;
     }
     case 'shortcut-help': shortcutHelp(); break;
+    case 'backup': downloadBackup(); break;
     case 'closing': closingForm(); break;
     case 'accounts': accountsForm(); break;
     case 'copy':
