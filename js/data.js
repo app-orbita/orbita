@@ -1,7 +1,11 @@
 // Capa de datos: Supabase en producción, localStorage en modo demo.
 import { CONFIG } from './config.js';
 
-export const DEMO = !CONFIG.supabaseUrl;
+// El modo demo SOLO funciona en la compu de desarrollo (localhost) o con ?demo en la dirección.
+// Publicada, si falta la configuración la app se frena y avisa, en vez de guardar datos solo en el navegador.
+const LOCAL = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) || /[?&]demo\b/.test(location.search);
+export const DEMO = !CONFIG.supabaseUrl && LOCAL;
+export const MISCONFIG = !CONFIG.supabaseUrl && !LOCAL;
 const TABLES = ['items', 'notes', 'movements', 'investments', 'recurring', 'workload', 'profiles', 'idea_folders', 'ideas', 'share_tokens', 'accounts', 'month_closings'];
 const NEW_V2 = ['recurring', 'workload', 'profiles', 'idea_folders', 'ideas', 'share_tokens', 'accounts', 'month_closings']; // si todavía no se corrió el SQL v2, no rompen la app
 let sb = null;
