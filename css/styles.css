@@ -596,3 +596,13 @@ h4.sub { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; colo
   .imp-head > span:nth-child(5), .imp-row > span:nth-child(5) { display: none; }
   .imp-head > span:nth-child(6), .imp-row > span:nth-child(6) { display: none; }
 }
+
+/* Compartidos por el otro usuario: en segundo plano */
+.chip.theirs { background: transparent; border: 1px dashed color-mix(in srgb, var(--seg) 55%, transparent); border-left-width: 3px; color: var(--muted); opacity: .75; font-weight: 500; }
+.dots i.theirs { background: transparent; box-shadow: inset 0 0 0 1.5px var(--seg); opacity: .8; }
+.ev-row.theirs { opacity: .62; }
+.ev-row.theirs .ev-bar { background: repeating-linear-gradient(180deg, var(--seg) 0 4px, transparent 4px 7px); }
+.ev-row.theirs strong { font-weight: 550; }
+.ev-row.theirs small svg { vertical-align: -2px; }
+.shared-mini { color: var(--teal); display: inline-grid; place-items: center; margin-left: auto; margin-right: 8px; }
+
