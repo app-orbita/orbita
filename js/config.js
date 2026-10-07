@@ -4,8 +4,8 @@
 // (datos guardados solo en ese navegador, sin sincronizar).
 // =====================================================================
 export const CONFIG = {
-  supabaseUrl: '',        // ej: 'https://abcdefgh.supabase.co'
-  supabaseKey: '',        // la "anon public" / "publishable" key del proyecto
+   supabaseUrl: 'https://inisrnsrloebstglhybf.supabase.co',
+   supabaseKey: 'sb_publishable_X4VOeQjmn3zakkAshx1O9g_m44QTPcn',
 
   // Nombre que se muestra en el saludo según el mail con el que entra cada uno
   nombres: {
