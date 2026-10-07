@@ -39,7 +39,7 @@ const INV_KINDS = ['Plazo fijo', 'FCI', 'Acciones', 'CEDEARs', 'Bonos', 'Cripto'
 
 /* ============================== Estado ============================== */
 const S = {
-  user: null, profile: null, items: [], notes: [], movements: [], investments: [], recurring: [], workload: [], profiles: [], idea_folders: [], ideas: [], share_tokens: [], accounts: [], month_closings: [], ideaFolder: null,
+  user: null, profile: null, items: [], notes: [], movements: [], investments: [], recurring: [], workload: [], profiles: [], idea_folders: [], ideas: [], share_tokens: [], accounts: [], month_closings: [], sharedItems: [], sharedRecs: [], ideaFolder: null,
   route: 'resumen', tabs: {}, calMonth: monthKey(new Date()), selDay: todayIso(), month: monthKey(new Date()),
 };
 const app = $('#app');
@@ -65,9 +65,24 @@ async function enter() {
   if (db.DEMO) db.setDemoUser(S.user.id);
   app.innerHTML = '<div class="loading"><div class="sun"></div></div>';
   Object.assign(S, await db.loadAll());
-  S.profile = S.profiles.find((p) => p.user_id === S.user.id) || null;
+  splitShared();
   readRoute();
   render();
+}
+// Separa lo propio de lo que el otro usuario compartió (eso solo se ve en el calendario, en segundo plano)
+function splitShared() {
+  S.profile = S.profiles.find((p) => p.user_id === S.user.id) || null;
+  const mine = (r) => !r.user_id || r.user_id === S.user.id;
+  S.sharedItems = S.items.filter((r) => !mine(r)); S.items = S.items.filter(mine);
+  S.sharedRecs = S.recurring.filter((r) => !mine(r)); S.recurring = S.recurring.filter(mine);
+}
+// Nombre del otro usuario (para "Compartir con …" y "de …")
+function otherName(uid) {
+  const p = uid && S.profiles.find((x) => x.user_id === uid);
+  if (p?.display_name) return p.display_name;
+  const me = (S.user?.email || '').toLowerCase();
+  const o = Object.entries(CONFIG.nombres || {}).find(([e]) => e.toLowerCase() !== me);
+  return o ? o[1] : 'el otro usuario';
 }
 function readRoute() {
   const r = location.hash.replace('#/', '');
@@ -239,13 +254,20 @@ function events(from, to) {
     date: d, time: hhmm(r.due_time), title: r.title, seg: r.segment,
     tag: r.segment === 'cuentas' ? 'Vencimiento fijo' : (KIND[r.kind] || 'Recurrente'),
     sub: r.amount ? `aprox. ${money(r.amount, r.currency)}` : '', done: isDone(r, d), type: 'rec', id: r.id });
-  return ev.sort((a, b) => (a.date + (a.time || '99')).localeCompare(b.date + (b.time || '99')));
+  // Compartido por el otro usuario: va en segundo plano
+  for (const it of S.sharedItems) if (inR(it.due_date)) ev.push({
+    date: it.due_date, time: hhmm(it.due_time), title: it.title, seg: it.segment, tag: KIND[it.kind] || '',
+    done: it.status === 'hecho', type: 'shared', id: it.id, theirs: otherName(it.user_id) });
+  for (const r of S.sharedRecs) for (const d of occurrences(r, from, to)) ev.push({
+    date: d, time: hhmm(r.due_time), title: r.title, seg: r.segment, tag: KIND[r.kind] || 'Recurrente',
+    done: isDone(r, d), type: 'sharedrec', id: r.id, theirs: otherName(r.user_id) });
+  return ev.sort((a, b) => (!!a.theirs - !!b.theirs) || (a.date + (a.time || '99')).localeCompare(b.date + (b.time || '99')));
 }
 const evRow = (e) => `
-  <button class="ev-row ${e.done ? 'done' : ''}" style="--seg:var(--c-${e.seg})" data-action="open-ref" data-type="${e.type}" data-id="${e.id}" data-date="${e.date}">
+  <button class="ev-row ${e.done ? 'done' : ''} ${e.theirs ? 'theirs' : ''}" style="--seg:var(--c-${e.seg})" data-action="open-ref" data-type="${e.type}" data-id="${e.id}" data-date="${e.date}">
     <span class="ev-bar"></span>
     <span class="ev-main"><strong>${esc(e.title)}</strong>
-      <small>${esc(SEG[e.seg].label)}${e.tag ? ' · ' + esc(e.tag) : ''}${e.sub ? ' · ' + esc(e.sub) : ''}</small></span>
+      <small>${e.theirs ? `${icon('users', 12)} De ${esc(e.theirs)} · ` : ''}${esc(SEG[e.seg].label)}${e.tag ? ' · ' + esc(e.tag) : ''}${e.sub ? ' · ' + esc(e.sub) : ''}</small></span>
     ${e.done ? `<span class="ev-ok">${icon('check', 15)}</span>` : e.time ? `<span class="ev-time">${e.time}</span>` : ''}
   </button>`;
 
@@ -272,7 +294,7 @@ function viewResumen() {
 
   const open = S.items.filter((i) => i.status !== 'hecho');
   const overdue = open.filter((i) => i.due_date && i.due_date < t).length;
-  const week = ev.filter((e) => !e.done && e.date >= t && diffDays(e.date) < 7).length;
+  const week = ev.filter((e) => !e.theirs && !e.done && e.date >= t && diffDays(e.date) < 7).length;
   const nextTurno = S.items.filter((i) => (i.kind === 'turno' || i.kind === 'salud') && i.status !== 'hecho' && i.due_date >= t)
     .sort((a, b) => (a.due_date + (a.due_time || '')).localeCompare(b.due_date + (b.due_time || '')))[0];
   const mk = monthKey(new Date());
@@ -288,9 +310,9 @@ function viewResumen() {
     const cls = [k === t && 'today', k < t && 'past', k === S.selDay && 'sel', d.getMonth() !== cm - 1 && 'out'].filter(Boolean).join(' ');
     return `<button class="cal-cell ${cls}" data-action="sel-day" data-date="${k}">
       <span class="cal-num">${d.getDate()}</span>
-      <span class="chips">${list.slice(0, 3).map((e) => `<span class="chip ${e.done ? 'done' : ''}" style="--seg:var(--c-${e.seg})">${esc(e.title)}</span>`).join('')}
+      <span class="chips">${list.slice(0, 3).map((e) => `<span class="chip ${e.done ? 'done' : ''} ${e.theirs ? 'theirs' : ''}" style="--seg:var(--c-${e.seg})" title="${e.theirs ? 'De ' + esc(e.theirs) : ''}">${esc(e.title)}</span>`).join('')}
         ${list.length > 3 ? `<span class="more">+${list.length - 3} más</span>` : ''}</span>
-      <span class="dots">${list.slice(0, 4).map((e) => `<i style="--seg:var(--c-${e.seg})" class="${e.done ? 'done' : ''}"></i>`).join('')}</span>
+      <span class="dots">${list.slice(0, 4).map((e) => `<i style="--seg:var(--c-${e.seg})" class="${e.done ? 'done' : ''} ${e.theirs ? 'theirs' : ''}"></i>`).join('')}</span>
     </button>`;
   }).join('');
   const wl = S.workload.length ? workLevel(cm) : null;
@@ -381,7 +403,7 @@ function viewBoard(seg) {
       const late = i.due_date && i.due_date < t && st !== 'hecho';
       const next = st === 'pendiente' ? ['en_curso', 'arrow', 'Pasar a En curso'] : st === 'en_curso' ? ['hecho', 'check', 'Marcar hecho'] : ['pendiente', 'undo', 'Reabrir'];
       return `<article class="task prio-${i.priority}" draggable="true" data-id="${i.id}" data-action="edit-item">
-        <div class="task-top"><span class="tag">${esc(KIND[i.kind] || 'Tarea')}</span><span class="prio" title="Prioridad ${i.priority}"></span></div>
+        <div class="task-top"><span class="tag">${esc(KIND[i.kind] || 'Tarea')}</span>${i.shared ? `<span class="shared-mini" title="Compartido con ${esc(otherName())}">${icon('users', 13)}</span>` : ''}<span class="prio" title="Prioridad ${i.priority}"></span></div>
         <h4>${esc(i.title)}</h4>
         ${i.description ? `<p class="desc">${esc(i.description.slice(0, 110))}</p>` : ''}
         <div class="task-foot">
@@ -998,7 +1020,7 @@ async function importExcel(file) {
       });
       await db.upsertMany('month_closings', cls, ['user_id', 'month']);
       Object.assign(S, await db.loadAll());
-      S.profile = S.profiles.find((p) => p.user_id === S.user.id) || null;
+      splitShared();
       S.month = sel[sel.length - 1].month;
       render(); toast(`Listo: ${sel.length} mes${sel.length > 1 ? 'es' : ''} importado${sel.length > 1 ? 's' : ''}`);
     },
@@ -1062,7 +1084,8 @@ function itemForm(seg, item = {}, preset = {}) {
       <div class="quick-dates full"><span>Fecha rápida, desde hoy:</span>${steps.map(([k, l]) => `<button type="button" class="qd" data-step="${k}">+ ${l}</button>`).join('')}</div>
       ${field({ name: 'priority', label: 'Prioridad', type: 'select', value: item.priority || 'media', options: PRIO })}
       ${field({ name: 'location', label: isTurno ? 'Profesional / lugar' : 'Lugar (opcional)', value: item.location })}
-      ${field({ name: 'description', label: 'Notas', type: 'textarea', value: item.description, full: true })}`,
+      ${field({ name: 'description', label: 'Notas', type: 'textarea', value: item.description, full: true })}
+      ${db.DEMO ? '' : field({ name: 'shared', label: `Compartir con ${otherName()} (lo ve en su calendario, sin poder editarlo)`, type: 'checkbox', value: item.shared, full: true })}`,
     onSubmit: async (d) => {
       const row = { ...d, segment: seg };
       if (item.id) await save('items', item.id, row, true); else await add('items', row);
@@ -1073,6 +1096,20 @@ function itemForm(seg, item = {}, preset = {}) {
     const k = b.dataset.step, n = Number(k.slice(1));
     root.querySelector('[name=due_date]').value = iso(k[0] === 'd' ? addDays(today(), n) : addMonths(today(), n));
   }));
+}
+
+// Vista de solo lectura de algo que compartió el otro usuario
+function sharedModal(x, date, rec = false) {
+  openModal({
+    title: x.title, accent: SEG[x.segment].color,
+    body: `<div class="occ full">
+      <p class="shared-pill">${icon('users', 13)} Compartido por ${esc(otherName(x.user_id))}</p>
+      <p><strong>${fmtLong(date)}</strong>${x.due_time ? ' · ' + hhmm(x.due_time) : ''}</p>
+      <p class="muted">${SEG[x.segment].label} · ${esc(KIND[x.kind] || '')}${rec ? ' · ' + freqText(x) : ''}${x.location ? ' · ' + esc(x.location) : ''}</p>
+      ${x.description || x.notes ? `<p class="occ-notes">${esc(x.description || x.notes)}</p>` : ''}
+      <p class="muted small">Solo ${esc(otherName(x.user_id))} puede modificarlo.</p>
+    </div>`,
+  });
 }
 
 /* ---------- Recurrentes ---------- */
@@ -1098,7 +1135,8 @@ function recForm(seg, r = {}, preset = {}) {
       ${field({ name: 'start_date', label: 'Desde', type: 'date', value: r.start_date || todayIso() })}
       ${field({ name: 'end_date', label: 'Hasta (opcional)', type: 'date', value: r.end_date })}
       ${field({ name: 'notes', label: 'Notas', type: 'textarea', value: r.notes, full: true })}
-      ${r.id ? field({ name: 'active', label: 'Activo (destildalo para pausarlo sin borrarlo)', type: 'checkbox', value: r.active !== false, full: true }) : ''}`,
+      ${r.id ? field({ name: 'active', label: 'Activo (destildalo para pausarlo sin borrarlo)', type: 'checkbox', value: r.active !== false, full: true }) : ''}
+      ${db.DEMO || seg === 'cuentas' ? '' : field({ name: 'shared', label: `Compartir con ${otherName()} (lo ve en su calendario)`, type: 'checkbox', value: r.shared, full: true })}`,
     onSubmit: async (d) => {
       const row = { ...d, segment: seg };
       if (row.freq === 'semanal') { row.weekday = Number(row.weekday); row.day_of_month = null; row.month = null; }
@@ -1285,6 +1323,8 @@ document.addEventListener('click', async (e) => {
     case 'open-ref': {
       if (d.type === 'item') { const it = S.items.find((r) => r.id === d.id); itemForm(it.segment, it); }
       else if (d.type === 'rec') { const r = S.recurring.find((x) => x.id === d.id); if (r) occModal(r, d.date); }
+      else if (d.type === 'shared') { const it = S.sharedItems.find((x) => x.id === d.id); if (it) sharedModal(it, it.due_date); }
+      else if (d.type === 'sharedrec') { const r = S.sharedRecs.find((x) => x.id === d.id); if (r) sharedModal(r, d.date, true); }
       else if (d.type === 'mov') movForm(S.movements.find((r) => r.id === d.id));
       else invForm(S.investments.find((r) => r.id === d.id));
       break;
