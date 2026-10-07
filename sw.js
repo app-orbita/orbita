@@ -1,7 +1,7 @@
 // Service worker: guarda la "cáscara" de la app para que abra rápido.
 // Los datos siempre se piden en línea a Supabase.
 // Si cambiás archivos de la app, subí el número de versión.
-const VERSION = 'orbita-v4';
+const VERSION = 'orbita-v5';
 const SHELL = ['./', 'index.html', 'css/styles.css', 'js/app.js', 'js/ui.js', 'js/utils.js', 'js/data.js', 'js/config.js', 'js/importer.js',
   'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
