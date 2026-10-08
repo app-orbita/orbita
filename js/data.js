@@ -6,8 +6,8 @@ import { CONFIG } from './config.js';
 const LOCAL = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) || /[?&]demo\b/.test(location.search);
 export const DEMO = !CONFIG.supabaseUrl && LOCAL;
 export const MISCONFIG = !CONFIG.supabaseUrl && !LOCAL;
-const TABLES = ['items', 'notes', 'movements', 'investments', 'recurring', 'workload', 'profiles', 'idea_folders', 'ideas', 'share_tokens', 'accounts', 'month_closings'];
-const NEW_V2 = ['recurring', 'workload', 'profiles', 'idea_folders', 'ideas', 'share_tokens', 'accounts', 'month_closings']; // si todavía no se corrió el SQL v2, no rompen la app
+const TABLES = ['items', 'notes', 'movements', 'investments', 'recurring', 'workload', 'profiles', 'idea_folders', 'ideas', 'share_tokens', 'accounts', 'month_closings', 'user_settings'];
+const NEW_V2 = ['recurring', 'workload', 'profiles', 'idea_folders', 'ideas', 'share_tokens', 'accounts', 'month_closings', 'user_settings']; // si todavía no se corrió el SQL v2, no rompen la app
 let sb = null;
 
 export async function init() {
@@ -113,6 +113,12 @@ export async function insertMany(table, rows) {
     out.push(...data);
   }
   return out;
+}
+// Actualiza todas las filas propias que coinciden (ej. renombrar una categoría)
+export async function updateWhere(table, match, patch) {
+  if (DEMO) { writeDemo(table, readDemo(table).map((r) => (Object.entries(match).every(([k, v]) => r[k] === v) ? { ...r, ...patch } : r))); return; }
+  const { error } = await sb.from(table).update(patch).match(match);
+  if (error) throw error;
 }
 export async function removeWhereIn(table, col, values) {
   if (!values.length) return;
