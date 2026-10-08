@@ -27,7 +27,7 @@ const REC = {
   academico: { kinds: ['clase', 'entrega', 'tarea'], freq: 'semanal', btn: 'Recurrente', ph: 'Ej: Clase de Finanzas' },
   personal:  { kinds: ['cumpleanos', 'salud', 'evento', 'tramite'], freq: 'anual', btn: 'Fecha', ph: 'Ej: Cumpleaños de Juan' },
 };
-const FREQ = [['mensual', 'Todos los meses'], ['anual', 'Todos los años'], ['semanal', 'Todas las semanas']];
+const FREQ = [['mensual', 'Todos los meses'], ['meses', 'Meses que elijo (trimestral, semestral…)'], ['anual', 'Todos los años'], ['semanal', 'Todas las semanas']];
 const DIAS_PL = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábados', 'domingos'];
 const LVL = ['Libre', 'Baja', 'Media', 'Alta'];
 const STATUS = [['pendiente', 'Pendiente'], ['en_curso', 'En curso'], ['hecho', 'Hecho']];
@@ -39,7 +39,7 @@ const INV_KINDS = ['Plazo fijo', 'FCI', 'Acciones', 'CEDEARs', 'Bonos', 'Cripto'
 
 /* ============================== Estado ============================== */
 const S = {
-  user: null, profile: null, items: [], notes: [], movements: [], investments: [], recurring: [], workload: [], profiles: [], idea_folders: [], ideas: [], share_tokens: [], accounts: [], month_closings: [], sharedItems: [], sharedRecs: [], ideaFolder: null,
+  user: null, profile: null, items: [], notes: [], movements: [], investments: [], recurring: [], workload: [], profiles: [], idea_folders: [], ideas: [], share_tokens: [], accounts: [], month_closings: [], user_settings: [], sharedItems: [], sharedRecs: [], ideaFolder: null,
   route: 'resumen', tabs: {}, calMonth: monthKey(new Date()), selDay: todayIso(), month: monthKey(new Date()),
 };
 const app = $('#app');
@@ -84,6 +84,29 @@ function otherName(uid) {
   const o = Object.entries(CONFIG.nombres || {}).find(([e]) => e.toLowerCase() !== me);
   return o ? o[1] : 'el otro usuario';
 }
+/* ---------- Preferencias de cada usuario: categorías, columnas del tablero y pestañas visibles ---------- */
+const DEF_COLS = [['pendiente', 'Pendiente'], ['en_curso', 'En curso'], ['hecho', 'Hecho']];
+const DEF_ING = ['Sueldo Estudio', 'Cobros extra', 'Rendimientos financieros', 'Otros ingresos'];
+const prefs = () => S.user_settings[0]?.data || {};
+async function savePrefs(patch) {
+  const data = { ...prefs(), ...patch };
+  const [rec] = await db.upsertMany('user_settings', [{ user_id: S.user.id, data }], ['user_id']);
+  S.user_settings = [rec];
+}
+const boardCols = (seg) => { const c = prefs().boards?.[seg]; return c?.length ? c.map((x) => [x.key, x.label]) : DEF_COLS; };
+function visibleTabs(seg) {
+  const hid = prefs().hiddenTabs?.[seg] || [];
+  const t = SEG[seg].tabs.filter(([k]) => !hid.includes(k));
+  return t.length ? t : SEG[seg].tabs.slice(0, 1);
+}
+function catList(type) {
+  const saved = prefs().categories?.[type];
+  if (saved) return saved;
+  const def = type === 'ingreso' ? DEF_ING : CATS.filter((c) => !DEF_ING.includes(c) && c !== 'Otros').concat('Otros');
+  const used = S.movements.filter((m) => m.type === type && m.category).map((m) => m.category);
+  return [...new Set([...def, ...used])];
+}
+
 function readRoute() {
   const r = location.hash.replace('#/', '');
   S.route = SEG[r] || r === 'perfil' ? r : 'resumen';
@@ -159,8 +182,9 @@ function view() {
   if (S.route === 'resumen') return viewResumen();
   if (S.route === 'perfil') return viewPerfil();
   const s = SEG[S.route];
-  const tab = S.tabs[S.route] || s.tabs[0][0];
-  const tabs = s.tabs.map(([k, l]) => `<button class="tab ${tab === k ? 'active' : ''}" data-action="tab" data-tab="${k}">${l}</button>`).join('');
+  const vt = visibleTabs(S.route);
+  const tab = vt.some(([k]) => k === S.tabs[S.route]) ? S.tabs[S.route] : vt[0][0];
+  const tabs = vt.map(([k, l]) => `<button class="tab ${tab === k ? 'active' : ''}" data-action="tab" data-tab="${k}">${l}</button>`).join('');
   let body = '';
   if (tab === 'tablero') body = viewBoard(S.route);
   else if (tab === 'notas') body = viewNotes(S.route);
@@ -176,7 +200,8 @@ function view() {
       <div><p class="eyebrow"><span class="seg-dot"></span>${s.blurb}</p><h1>${s.label}</h1></div>
       ${primaryButton(S.route, tab)}
     </header>
-    <div class="tabs">${tabs}</div>
+    <div class="tabs-row"><div class="tabs">${tabs}</div>
+      <button class="icon-btn cfg" data-action="customize" data-seg="${S.route}" title="Personalizar ${s.label}" aria-label="Personalizar">${icon('edit', 17)}</button></div>
     ${body}
   </section>`;
 }
@@ -214,6 +239,13 @@ function occurrences(r, from, to) {
     let d = new Date(s);
     while ((d.getDay() + 6) % 7 !== Number(r.weekday ?? 0)) d = addDays(d, 1);
     for (; d <= e; d = addDays(d, 7)) out.push(iso(d));
+  } else if (r.freq === 'meses') {
+    const ms = (r.months || []).map(Number);
+    let y = s.getFullYear(), m = s.getMonth();
+    while (y < e.getFullYear() || (y === e.getFullYear() && m <= e.getMonth())) {
+      if (ms.includes(m + 1)) push(new Date(y, m, Math.min(Number(r.day_of_month || 1), daysIn(y, m))));
+      if (++m > 11) { m = 0; y++; }
+    }
   } else if (r.freq === 'anual') {
     const m = Number(r.month || 1) - 1;
     for (let y = s.getFullYear(); y <= e.getFullYear(); y++) push(new Date(y, m, Math.min(Number(r.day_of_month || 1), daysIn(y, m))));
@@ -234,6 +266,10 @@ function pendingOcc(r) {
 function freqText(r) {
   if (r.freq === 'semanal') return `Todos los ${DIAS_PL[Number(r.weekday ?? 0)]}`;
   if (r.freq === 'anual') return `Todos los años, ${r.day_of_month} de ${MESES[Number(r.month || 1) - 1]}`;
+  if (r.freq === 'meses') {
+    const ms = [...(r.months || [])].map(Number).sort((a, b) => a - b).map((m) => MESES[m - 1].slice(0, 3));
+    return `En ${ms.length > 1 ? ms.slice(0, -1).join(', ') + ' y ' + ms[ms.length - 1] : ms[0] || '—'}, día ${r.day_of_month}`;
+  }
   return `Todos los meses, día ${r.day_of_month}`;
 }
 
@@ -396,12 +432,16 @@ const prioRank = { alta: 0, media: 1, baja: 2 };
 function viewBoard(seg) {
   const its = S.items.filter((i) => i.segment === seg && !(seg === 'personal' && (i.kind === 'turno' || i.kind === 'salud')));
   const t = todayIso();
-  const cols = STATUS.map(([st, label]) => {
-    const list = its.filter((i) => i.status === st).sort((a, b) =>
+  const C = boardCols(seg);
+  const keys = C.map(([k]) => k);
+  const colOf = (i) => (keys.includes(i.status) ? i.status : keys[0]);
+  const cols = C.map(([st, label], ci) => {
+    const list = its.filter((i) => colOf(i) === st).sort((a, b) =>
       (a.due_date || '9999').localeCompare(b.due_date || '9999') || prioRank[a.priority] - prioRank[b.priority]);
     const cards = list.map((i) => {
       const late = i.due_date && i.due_date < t && st !== 'hecho';
-      const next = st === 'pendiente' ? ['en_curso', 'arrow', 'Pasar a En curso'] : st === 'en_curso' ? ['hecho', 'check', 'Marcar hecho'] : ['pendiente', 'undo', 'Reabrir'];
+      const nk = C[ci + 1];
+      const next = !nk ? [keys[0], 'undo', `Volver a ${C[0][1]}`] : nk[0] === 'hecho' ? ['hecho', 'check', 'Marcar hecho'] : [nk[0], 'arrow', `Pasar a ${nk[1]}`];
       return `<article class="task prio-${i.priority}" draggable="true" data-id="${i.id}" data-action="edit-item">
         <div class="task-top"><span class="tag">${esc(KIND[i.kind] || 'Tarea')}</span>${i.shared ? `<span class="shared-mini" title="Compartido con ${esc(otherName())}">${icon('users', 13)}</span>` : ''}<span class="prio" title="Prioridad ${i.priority}"></span></div>
         <h4>${esc(i.title)}</h4>
@@ -413,12 +453,12 @@ function viewBoard(seg) {
       </article>`;
     }).join('');
     return `<div class="col" data-status="${st}">
-      <div class="col-head"><span class="st st-${st}"></span>${label}<span class="count">${list.length}</span></div>
+      <div class="col-head"><span class="st st-${['pendiente', 'en_curso', 'hecho'].includes(st) ? st : 'custom'}"></span>${esc(label)}<span class="count">${list.length}</span></div>
       <div class="col-body">${cards || '<p class="empty sm">Arrastrá tarjetas acá</p>'}</div>
       ${st !== 'hecho' ? `<button class="add-inline" data-action="new-item" data-seg="${seg}" data-status="${st}">${icon('plus', 16)} Agregar</button>` : ''}
     </div>`;
   }).join('');
-  return `<div class="board">${cols}</div>`;
+  return `<div class="board" style="--cols:${C.length}">${cols}</div>`;
 }
 
 function bindDnD() {
@@ -1078,7 +1118,7 @@ function itemForm(seg, item = {}, preset = {}) {
       ${field({ name: 'title', label: isTurno ? 'Especialidad / motivo' : 'Título', value: item.title, required: true, full: true,
         placeholder: kind === 'salud' ? 'Ej: Endocrinología — repetir análisis' : isTurno ? 'Ej: Dermatología — control anual' : '' })}
       ${field({ name: 'kind', label: 'Tipo', type: 'select', value: kind, options: s.kinds.map((k) => [k, KIND[k]]) })}
-      ${field({ name: 'status', label: 'Estado', type: 'select', value: item.status || preset.status || 'pendiente', options: STATUS })}
+      ${field({ name: 'status', label: 'Columna', type: 'select', value: item.status || preset.status || boardCols(seg)[0][0], options: boardCols(seg) })}
       ${field({ name: 'due_date', label: 'Fecha', type: 'date', value: item.due_date || preset.date })}
       ${field({ name: 'due_time', label: 'Hora', type: 'time', value: hhmm(item.due_time) })}
       <div class="quick-dates full"><span>Fecha rápida, desde hoy:</span>${steps.map(([k, l]) => `<button type="button" class="qd" data-step="${k}">+ ${l}</button>`).join('')}</div>
@@ -1116,7 +1156,7 @@ function sharedModal(x, date, rec = false) {
 function recForm(seg, r = {}, preset = {}) {
   const cfg = REC[seg];
   const freq = r.freq || preset.freq || cfg.freq;
-  const wrap = (fq, html) => `<div class="fq" data-fq="${fq}">${html}</div>`;
+  const wrap = (fq, html, full = false) => `<div class="fq ${full ? 'full' : ''}" data-fq="${fq}">${html}</div>`;
   const root = openModal({
     title: r.id ? 'Editar recurrente' : seg === 'cuentas' ? 'Nuevo vencimiento fijo' : seg === 'personal' ? 'Nueva fecha que se repite' : 'Nuevo recurrente',
     accent: SEG[seg].color,
@@ -1125,7 +1165,11 @@ function recForm(seg, r = {}, preset = {}) {
       ${cfg.kinds.length > 1 ? field({ name: 'kind', label: 'Tipo', type: 'select', value: r.kind || preset.kind || cfg.kinds[0], options: cfg.kinds.map((k) => [k, KIND[k]]) })
         : `<input type="hidden" name="kind" value="${cfg.kinds[0]}">`}
       ${field({ name: 'freq', label: 'Se repite', type: 'select', value: freq, options: FREQ, full: cfg.kinds.length === 1 })}
-      ${wrap('mensual anual', field({ name: 'day_of_month', label: 'Día', type: 'number', value: r.day_of_month ?? '', inputmode: 'numeric', placeholder: '1 a 31' }))}
+      ${wrap('meses', `<div class="full"><span class="lbl">Meses en que se hace</span>
+        <div class="month-pick">${MESES.map((m, i) => `<button type="button" class="mp ${(r.months || []).map(Number).includes(i + 1) ? 'on' : ''}" data-m="${i + 1}">${cap(m.slice(0, 3))}</button>`).join('')}</div>
+        <div class="mp-presets"><span>Atajos:</span>${[['Ene·Abr·Jul·Oct', [1, 4, 7, 10]], ['Feb·May·Ago·Nov', [2, 5, 8, 11]], ['Mar·Jun·Sep·Dic', [3, 6, 9, 12]], ['Semestral (Ene·Jul)', [1, 7]]]
+          .map(([l, ms]) => `<button type="button" class="qd" data-ms="${ms.join(',')}">${l}</button>`).join('')}</div></div>`, true)}
+      ${wrap('mensual anual meses', field({ name: 'day_of_month', label: 'Día', type: 'number', value: r.day_of_month ?? '', inputmode: 'numeric', placeholder: '1 a 31' }))}
       ${wrap('anual', field({ name: 'month', label: 'Mes', type: 'select', value: r.month || today().getMonth() + 1, options: MESES.map((m, i) => [i + 1, cap(m)]) }))}
       ${wrap('semanal', field({ name: 'weekday', label: 'Día de la semana', type: 'select', value: r.weekday ?? 0, options: DIAS_PL.map((d, i) => [i, cap(d)]) }))}
       ${field({ name: 'due_time', label: 'Hora (opcional)', type: 'time', value: hhmm(r.due_time) })}
@@ -1145,6 +1189,8 @@ function recForm(seg, r = {}, preset = {}) {
         if (!(row.day_of_month >= 1 && row.day_of_month <= 31)) throw new Error('Poné un día entre 1 y 31.');
         row.month = row.freq === 'anual' ? Number(row.month) : null; row.weekday = null;
       }
+      row.months = row.freq === 'meses' ? [...months].sort((a, b) => a - b) : null;
+      if (row.freq === 'meses' && !row.months.length) throw new Error('Elegí al menos un mes.');
       if ('amount' in row) row.amount = row.amount == null ? null : Number(String(row.amount).replace(',', '.'));
       if (row.end_date && row.end_date < row.start_date) throw new Error('La fecha "Hasta" es anterior a "Desde".');
       if (!r.id) row.done_dates = [];
@@ -1152,6 +1198,10 @@ function recForm(seg, r = {}, preset = {}) {
     },
     onDelete: r.id ? () => del('recurring', r.id) : null,
   });
+  const months = new Set((r.months || []).map(Number));
+  const paint = () => root.querySelectorAll('.mp').forEach((b) => b.classList.toggle('on', months.has(Number(b.dataset.m))));
+  root.querySelectorAll('.mp').forEach((b) => b.addEventListener('click', () => { const m = Number(b.dataset.m); months.has(m) ? months.delete(m) : months.add(m); paint(); }));
+  root.querySelectorAll('[data-ms]').forEach((b) => b.addEventListener('click', () => { months.clear(); b.dataset.ms.split(',').forEach((m) => months.add(Number(m))); paint(); }));
   const sel = root.querySelector('[name=freq]');
   const sync = () => root.querySelectorAll('.fq').forEach((w) => { w.hidden = !w.dataset.fq.split(' ').includes(sel.value); });
   sel.addEventListener('change', sync); sync();
@@ -1217,14 +1267,15 @@ function noteForm(seg, n = {}) {
 }
 
 function movForm(m = {}) {
-  openModal({
+  const root = openModal({
     title: m.id ? 'Editar movimiento' : 'Nuevo movimiento', accent: 'var(--c-cuentas)',
     body: `
       ${field({ name: 'type', label: 'Tipo', type: 'select', value: m.type || 'gasto', options: [['gasto', 'Gasto'], ['ingreso', 'Ingreso']] })}
       ${field({ name: 'date', label: 'Fecha', type: 'date', value: m.date || todayIso(), required: true })}
       ${field({ name: 'description', label: 'Descripción', value: m.description, required: true, full: true })}
-      ${field({ name: 'category', label: 'Categoría', value: m.category, list: 'cats' })}
-      <datalist id="cats">${[...new Set([...CATS, ...S.movements.map((x) => x.category).filter(Boolean)])].map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
+      ${field({ name: 'category', label: 'Categoría', value: m.category, list: 'cats', placeholder: 'Elegí o escribí una nueva' })}
+      <datalist id="cats">${catList(m.type || 'gasto').map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
+      <div class="full cat-link"><button type="button" class="btn ghost sm" data-action="customize" data-seg="cuentas">${icon('edit', 14)} Editar mis categorías</button></div>
       ${field({ name: 'currency', label: 'Moneda', type: 'select', value: m.currency || 'ARS', options: [['ARS', 'Pesos (ARS)'], ['USD', 'Dólares (USD)']] })}
       ${field({ name: 'amount', label: 'Monto', type: 'number', value: m.amount, required: true, step: '0.01', inputmode: 'decimal' })}
       ${field({ name: 'paid', label: 'Ya está pagado / cobrado (si no, queda como vencimiento en el calendario)', type: 'checkbox', value: m.id ? m.paid : true, full: true })}`,
@@ -1232,9 +1283,90 @@ function movForm(m = {}) {
       d.amount = Number(String(d.amount).replace(',', '.'));
       if (!(d.amount > 0)) throw new Error('El monto tiene que ser mayor a cero.');
       if (m.id) await save('movements', m.id, d, true); else await add('movements', d);
+      // Una categoría nueva escrita a mano queda guardada en mi lista
+      const list = catList(d.type);
+      if (d.category && !list.includes(d.category)) {
+        try { await savePrefs({ categories: { ...(prefs().categories || {}), [d.type]: [...list, d.category], [d.type === 'gasto' ? 'ingreso' : 'gasto']: catList(d.type === 'gasto' ? 'ingreso' : 'gasto') } }); } catch {}
+      }
     },
     onDelete: m.id ? () => del('movements', m.id) : null,
   });
+  bindMovType(root);
+}
+
+function bindMovType(root) {
+  const t = root.querySelector('[name=type]'); const dl = root.querySelector('#cats');
+  if (t && dl) t.addEventListener('change', () => { dl.innerHTML = catList(t.value).map((c) => `<option value="${esc(c)}">`).join(''); });
+}
+
+/* ---------- Personalizar un segmento (cada usuario el suyo) ---------- */
+function customizeForm(seg) {
+  const s = SEG[seg];
+  const hid = prefs().hiddenTabs?.[seg] || [];
+  const hasBoard = s.tabs.some(([k]) => k === 'tablero');
+  const C = boardCols(seg);
+  const its = S.items.filter((i) => i.segment === seg);
+  const cnt = (k) => its.filter((i) => (C.some(([kk]) => kk === i.status) ? i.status : C[0][0]) === k).length;
+  const catRows = (type) => catList(type).map((c, i) => `<div class="edit-row">
+      <input name="cat_${type}_${i}" value="${esc(c)}" data-old="${esc(c)}">
+      <label class="check sm"><input type="checkbox" name="catdel_${type}_${i}"><span>Quitar</span></label></div>`).join('');
+  const root = openModal({
+    title: `Personalizar ${s.label}`, accent: s.color, wide: true,
+    body: `<p class="muted small full">Estos cambios son solo para vos: ${esc(otherName())} no ve ninguna diferencia.</p>
+      <div class="full"><h4 class="sub">Pestañas que querés ver</h4>
+        <div class="tab-checks">${s.tabs.map(([k, l]) => `<label class="check"><input type="checkbox" name="tab_${k}" ${hid.includes(k) ? '' : 'checked'}><span>${l}</span></label>`).join('')}</div>
+        <p class="muted small">Ocultar una pestaña no borra nada: si la volvés a activar, está todo como lo dejaste.</p></div>
+      ${hasBoard ? `<div class="full"><h4 class="sub">Columnas del tablero</h4>
+        ${C.map(([k, l], i) => `<div class="edit-row"><input name="col_${i}" value="${esc(l)}" data-key="${k}" maxlength="24">
+          ${k === 'hecho' ? '<small class="muted">siempre está (marca lo terminado)</small>'
+            : cnt(k) ? `<small class="muted">${cnt(k)} tarjeta${cnt(k) > 1 ? 's' : ''}: movelas para poder quitarla</small>`
+            : `<label class="check sm"><input type="checkbox" name="coldel_${i}"><span>Quitar</span></label>`}</div>`).join('')}
+        <div class="edit-row"><input name="col_new" placeholder="Nueva columna (ej: Fechas)" maxlength="24"><span></span></div></div>` : ''}
+      ${seg === 'cuentas' ? ['gasto', 'ingreso'].map((type) => `<div class="full"><h4 class="sub">Categorías de ${type === 'gasto' ? 'gastos' : 'ingresos'}</h4>
+        ${catRows(type)}
+        <div class="edit-row"><input name="catnew_${type}" placeholder="Nueva categoría"><span></span></div></div>`).join('')
+        + '<p class="muted small full">Si renombrás una categoría, también se actualizan tus movimientos que la usan. Quitarla solo la saca de la lista: los movimientos viejos no se tocan.</p>' : ''}`,
+    onSubmit: async (d) => {
+      const hiddenTabs = { ...(prefs().hiddenTabs || {}) };
+      hiddenTabs[seg] = s.tabs.filter(([k]) => !d['tab_' + k]).map(([k]) => k);
+      if (hiddenTabs[seg].length === s.tabs.length) throw new Error('Dejá al menos una pestaña visible.');
+      const patch = { hiddenTabs };
+      if (hasBoard) {
+        let cols = C.map(([k], i) => ({ key: k, label: (d['col_' + i] || '').trim() || C[i][1], del: !!d['coldel_' + i] })).filter((c) => !c.del).map(({ key, label }) => ({ key, label }));
+        if (d.col_new) {
+          const nc = { key: 'c_' + Math.random().toString(36).slice(2, 8), label: d.col_new.trim() };
+          const h = cols.findIndex((c) => c.key === 'hecho');
+          if (h >= 0) cols.splice(h, 0, nc); else cols.push(nc);
+        }
+        if (!cols.length) throw new Error('El tablero necesita al menos una columna.');
+        patch.boards = { ...(prefs().boards || {}), [seg]: cols };
+      }
+      const renames = [];
+      if (seg === 'cuentas') {
+        const categories = {};
+        for (const type of ['gasto', 'ingreso']) {
+          const list = catList(type); const out = [];
+          list.forEach((old, i) => {
+            if (d[`catdel_${type}_${i}`]) return;
+            const nv = (d[`cat_${type}_${i}`] || '').trim() || old;
+            if (nv !== old) renames.push([type, old, nv]);
+            if (!out.includes(nv)) out.push(nv);
+          });
+          const nn = (d['catnew_' + type] || '').trim();
+          if (nn && !out.includes(nn)) out.push(nn);
+          categories[type] = out;
+        }
+        patch.categories = categories;
+      }
+      await savePrefs(patch);
+      for (const [type, old, nv] of renames) {
+        await db.updateWhere('movements', { type, category: old }, { category: nv });
+        S.movements.forEach((m) => { if (m.type === type && m.category === old) m.category = nv; });
+      }
+      render(); toast('Listo, guardado solo para vos');
+    },
+  });
+  return root;
 }
 
 function invForm(v = {}) {
@@ -1309,6 +1441,7 @@ document.addEventListener('click', async (e) => {
   const find = (t) => S[t].find((r) => r.id === d.id);
   switch (d.action) {
     case 'tab': S.tabs[S.route] = d.tab; render(); break;
+    case 'customize': customizeForm(d.seg || S.route); break;
     case 'quick-add': quickAdd(); break;
     case 'new-item': itemForm(d.seg, {}, { kind: d.kind || (d.seg === 'personal' ? 'tramite' : undefined), status: d.status }); break;
     case 'edit-item': { const it = find('items'); if (it) itemForm(it.segment, it); break; }
