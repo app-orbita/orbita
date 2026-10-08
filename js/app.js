@@ -58,14 +58,26 @@ const app = $('#app');
     if (S.user) await enter(); else renderLogin();
   } catch (e) { console.error(e); renderLogin(e.message); }
   window.addEventListener('hashchange', () => { if (S.user) { readRoute(); render(); } });
+  // Al volver a la app (por ejemplo después de guardar algo desde Instagram), trae los datos nuevos
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshData(); });
+  window.addEventListener('focus', () => refreshData());
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('./sw.js').catch(() => {});
 })();
 
+let lastLoad = 0, refreshing = false;
+async function refreshData(force = false) {
+  if (!S.user || refreshing || document.querySelector('.modal-root')) return;
+  if (!force && Date.now() - lastLoad < 15000) return;
+  refreshing = true;
+  try { Object.assign(S, await db.loadAll()); splitShared(); lastLoad = Date.now(); render(); }
+  catch (e) { console.warn('No se pudo actualizar', e); }
+  refreshing = false;
+}
 async function enter() {
   if (db.DEMO) db.setDemoUser(S.user.id);
   app.innerHTML = '<div class="loading"><div class="sun"></div></div>';
   Object.assign(S, await db.loadAll());
-  splitShared();
+  splitShared(); lastLoad = Date.now();
   readRoute();
   render();
 }
