@@ -186,6 +186,12 @@ function render() {
   </div>`;
   bindDnD();
   if (S.route === 'perfil') bindPerfil();
+  const isrch = $('#ideaSearch');
+  if (isrch) isrch.addEventListener('input', () => {
+    S.ideaQuery = isrch.value; const pos = isrch.selectionStart; render();
+    const n = $('#ideaSearch'); if (n) { n.focus(); n.setSelectionRange(pos, pos); }
+  });
+  loadPreviews();
   const xi = $('#xlsInput');
   if (xi) xi.addEventListener('change', () => { const f = xi.files?.[0]; xi.value = ''; if (f) importExcel(f); });
 }
@@ -667,6 +673,50 @@ const personAvatar = (uid) => {
   const p = S.profiles.find((x) => x.user_id === uid);
   return p?.avatar ? `<img class="avatar xs" src="${esc(p.avatar)}" alt="">` : `<span class="avatar xs">${esc((p?.display_name || 'M')[0])}</span>`;
 };
+/* ---------- Vista previa de links (texto e imagen del posteo) ---------- */
+// Usa el servicio gratuito Microlink: lee el título, el texto y la imagen de la publicación.
+// Se busca una sola vez por link y queda guardado en la idea (columna preview).
+const PREVIEW_API = 'https://api.microlink.io/?url=';
+const previewBusy = new Set();
+const igCdn = (u) => /cdninstagram|fbcdn/.test(u || '');
+function needsPreview(i) {
+  if (!/^https?:\/\//i.test(i.url || '')) return false;
+  const p = i.preview;
+  if (!p) return true;
+  const age = Date.now() - new Date(p.fetched_at || 0).getTime();
+  if (p.failed) return age > 2 * 864e5;                 // si falló, reintenta a los 2 días
+  return igCdn(p.image) && age > 5 * 864e5;            // las imágenes de Instagram vencen: se renuevan
+}
+function cleanDesc(d) {
+  if (!d) return '';
+  const m = /“([\s\S]+?)”?\s*$/.exec(d);                 // Instagram: «usuario on fecha: “texto”»
+  return (m ? m[1] : d).replace(/(\s*•\s*)+/g, ' ').trim();
+}
+async function fetchPreview(i) {
+  if (previewBusy.has(i.id)) return;
+  previewBusy.add(i.id);
+  let preview;
+  try {
+    const r = await fetch(PREVIEW_API + encodeURIComponent(i.url));
+    const j = await r.json();
+    if (j.status !== 'success') throw new Error(j.message || 'sin datos');
+    const d = j.data || {};
+    preview = { title: d.title || '', description: cleanDesc(d.description), image: d.image?.url || d.logo?.url || '',
+      author: d.author || '', publisher: d.publisher || '', fetched_at: new Date().toISOString() };
+  } catch { preview = { failed: true, fetched_at: new Date().toISOString() }; }
+  try {
+    const rec = await db.update('ideas', i.id, { preview });
+    S.ideas = S.ideas.map((x) => (x.id === i.id ? { ...x, ...rec } : x));
+    if (S.route === 'personal' && !document.querySelector('.modal-root')) render();
+  } catch (e) { console.warn('No se pudo guardar la vista previa', e); }
+  previewBusy.delete(i.id);
+}
+function loadPreviews() {
+  if (S.route !== 'personal') return;
+  const todo = S.ideas.filter((i) => (S.ideaFolder ? i.folder_id === S.ideaFolder : true) && needsPreview(i) && !previewBusy.has(i.id)).slice(0, 6);
+  (async () => { for (const i of todo) await fetchPreview(i); })();
+}
+
 function viewIdeas() {
   const f = S.idea_folders.find((x) => x.id === S.ideaFolder);
   if (f) return viewIdeaFolder(f);
@@ -675,8 +725,9 @@ function viewIdeas() {
     const its = S.ideas.filter((i) => i.folder_id === x.id);
     const last = its.map((i) => i.created_at || '').sort().pop();
     const mine = x.user_id === S.user.id;
+    const thumbs = its.filter((i) => i.preview?.image).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || '')).slice(0, 3);
     return `<button class="folder" data-action="open-folder" data-id="${x.id}">
-      <span class="folder-ico">${icon('folder', 22)}</span>
+      ${thumbs.length ? `<span class="folder-thumbs">${thumbs.map((i) => `<img src="${esc(i.preview.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`).join('')}</span>` : `<span class="folder-ico">${icon('folder', 22)}</span>`}
       <strong>${esc(x.name)}</strong>
       <small>${its.length} idea${its.length === 1 ? '' : 's'}${last ? ' · ' + relDay(iso(new Date(last))).toLowerCase() : ''}</small>
       ${x.shared ? `<span class="shared-pill">${icon('users', 13)} ${mine ? 'Compartida' : 'De ' + esc(personName(x.user_id))}</span>` : ''}
@@ -692,16 +743,26 @@ function viewIdeas() {
 }
 function viewIdeaFolder(f) {
   const mine = f.user_id === S.user.id;
-  const its = S.ideas.filter((i) => i.folder_id === f.id).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+  const q = (S.ideaQuery || '').toLowerCase().trim();
+  const txt = (i) => [i.title, i.content, i.url, i.preview?.title, i.preview?.description, i.preview?.author].filter(Boolean).join(' ').toLowerCase();
+  const all = S.ideas.filter((i) => i.folder_id === f.id).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+  const its = q ? all.filter((i) => txt(i).includes(q)) : all;
   const card = (i) => {
     const li = i.url ? linkInfo(i.url) : null;
-    const head = i.title || (!i.url ? '' : '');
+    const p = i.preview && !i.preview.failed ? i.preview : null;
+    const loading = !p && needsPreview(i);
+    const ptitle = p ? (p.title || '').replace(/\s*[•|]\s*(Instagram|X|TikTok|Pinterest|YouTube).*$/i, '').replace(/ on X$/, '') : '';
     return `<article class="idea" style="--plat:${li ? li.color : 'var(--sand)'}">
       <button class="idea-body" data-action="edit-idea" data-id="${i.id}">
+        ${p?.image ? `<span class="idea-img"><img src="${esc(p.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentNode.remove()"></span>` : ''}
+        <span class="idea-text">
         ${li ? `<span class="plat">${esc(li.name)}</span>` : `<span class="plat note-plat">${icon('note', 13)} Nota</span>`}
-        ${head ? `<strong>${esc(head)}</strong>` : ''}
-        ${i.content ? `<p>${esc(i.content)}</p>` : ''}
-        ${!head && !i.content && li ? `<p class="muted">${esc(li.host)}</p>` : ''}
+        ${i.title ? `<strong>${esc(i.title)}</strong>` : ''}
+        ${i.content ? `<p class="mine">${esc(i.content)}</p>` : ''}
+        ${p ? `${ptitle && ptitle !== i.title ? `<small class="pv-title">${esc(ptitle)}</small>` : ''}${p.description ? `<p class="pv-desc">${esc(p.description)}</p>` : ''}` : ''}
+        ${loading ? '<small class="muted pv-loading">Buscando vista previa…</small>' : ''}
+        ${!p && !loading && !i.title && !i.content && li ? `<p class="muted">${esc(li.host)}</p>` : ''}
+        </span>
       </button>
       <footer>
         ${f.shared ? `<span class="by" title="Agregada por ${esc(personName(i.user_id))}">${personAvatar(i.user_id)}</span>` : ''}
@@ -717,7 +778,8 @@ function viewIdeaFolder(f) {
       ${f.shared ? `<span class="shared-pill">${icon('users', 13)} ${mine ? 'Compartida con M' : 'Carpeta de ' + esc(personName(f.user_id))}</span>` : ''}
       ${mine ? `<button class="icon-btn" data-action="edit-folder" data-id="${f.id}" title="Editar carpeta">${icon('edit', 17)}</button>` : ''}
     </div>
-    <div class="ideas">${its.length ? its.map(card).join('') : `<div class="card empty-card">${icon('folder', 28)}<p>Carpeta vacía. Agregá un link o una idea.</p>
+    ${all.length > 3 ? `<div class="idea-search"><input id="ideaSearch" type="search" placeholder="Buscar en esta carpeta…" value="${esc(S.ideaQuery || '')}"></div>` : ''}
+    <div class="ideas">${its.length ? its.map(card).join('') : q ? `<p class="empty">Nada coincide con "${esc(S.ideaQuery)}".</p>` : `<div class="card empty-card">${icon('folder', 28)}<p>Carpeta vacía. Agregá un link o una idea.</p>
       <button class="btn soft" data-action="new-idea">Agregar idea</button></div>`}</div>`;
 }
 function folderForm(f = {}) {
@@ -744,6 +806,7 @@ function ideaForm(i = {}) {
         options: folders.map((f) => [f.id, f.name + (f.shared ? ' (compartida)' : '')]) })}`,
     onSubmit: async (d) => {
       if (d.url && !/^https?:\/\//i.test(d.url)) d.url = 'https://' + d.url;
+      if (i.id && d.url !== i.url) d.preview = null;
       if (!d.url && !d.title && !d.content) throw new Error('Poné al menos un link o una idea.');
       if (i.id) await save('ideas', i.id, d, true); else await add('ideas', d);
     },
@@ -1481,7 +1544,7 @@ document.addEventListener('click', async (e) => {
     case 'edit-rec': { const r = find('recurring'); if (r) recForm(r.segment, r); break; }
     case 'done-rec': toggleDone(d.id, d.date); break;
     case 'new-work': workForm(); break;
-    case 'open-folder': S.ideaFolder = d.id; render(); window.scrollTo(0, 0); break;
+    case 'open-folder': S.ideaFolder = d.id; S.ideaQuery = ''; render(); window.scrollTo(0, 0); break;
     case 'close-folder': S.ideaFolder = null; render(); break;
     case 'new-folder': folderForm(); break;
     case 'edit-folder': folderForm(find('idea_folders')); break;
