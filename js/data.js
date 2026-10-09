@@ -6,8 +6,8 @@ import { CONFIG } from './config.js';
 const LOCAL = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) || /[?&]demo\b/.test(location.search);
 export const DEMO = !CONFIG.supabaseUrl && LOCAL;
 export const MISCONFIG = !CONFIG.supabaseUrl && !LOCAL;
-const TABLES = ['items', 'notes', 'movements', 'investments', 'recurring', 'workload', 'profiles', 'idea_folders', 'ideas', 'share_tokens', 'accounts', 'month_closings', 'user_settings', 'blocks', 'push_subscriptions'];
-const NEW_V2 = ['recurring', 'workload', 'profiles', 'idea_folders', 'ideas', 'share_tokens', 'accounts', 'month_closings', 'user_settings', 'blocks', 'push_subscriptions']; // si todavía no se corrió el SQL v2, no rompen la app
+const TABLES = ['items', 'notes', 'movements', 'investments', 'recurring', 'workload', 'profiles', 'idea_folders', 'ideas', 'share_tokens', 'accounts', 'month_closings', 'user_settings', 'blocks', 'push_subscriptions', 'reminder_nags'];
+const NEW_V2 = ['recurring', 'workload', 'profiles', 'idea_folders', 'ideas', 'share_tokens', 'accounts', 'month_closings', 'user_settings', 'blocks', 'push_subscriptions', 'reminder_nags']; // si todavía no se corrió el SQL v2, no rompen la app
 let sb = null;
 
 export async function init() {
@@ -266,6 +266,9 @@ function seedDemo(uid) {
     { folder_id: f1.id, user_id: uid, title: 'Medidas del balcón', content: '3,20 m × 1,10 m\nIdea: plantas colgantes + banco angosto' },
     { folder_id: f2.id, user_id: uid, url: 'https://articulo.mercadolibre.com.ar/MLA-1', title: 'Auriculares para Juan' },
   ].map(mk));
+  const nagItem = readDemo('items').find((i) => i.kind === 'tramite');
+  if (nagItem) writeDemo('reminder_nags', [{ key: `i:${nagItem.id}:${nagItem.due_date}:9am`, user_id: uid, src: 'i', ref_id: nagItem.id,
+    occ_date: nagItem.due_date, title: nagItem.title, every: '01:00:00', next_at: now, sent_count: 2, created_at: now, stopped_at: null }]);
   writeDemo('blocks', [
     { title: 'Vacaciones', start_date: d(20), end_date: d(27), color: '#C0C29D', notes: 'Costa', shared: false },
   ].map(mk));
