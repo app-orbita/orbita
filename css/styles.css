@@ -729,3 +729,14 @@ h4.sub { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; colo
 /* Si un segmento tiene un color oscuro, su ícono se sigue viendo sobre la barra lateral y la inferior */
 .sidebar .nav-link svg, .bottom-nav .nav-link svg { color: color-mix(in srgb, var(--seg) 70%, #F3EEDC); }
 @media (max-width: 860px) { .sw span { width: 30px; height: 30px; } .swatches { gap: 7px; } }
+
+/* v11 · Avisos insistentes */
+.nag-wrap[hidden] { display: none; }
+.nag-card { border: 1.5px solid color-mix(in srgb, var(--rust) 35%, transparent); background: color-mix(in srgb, var(--rust) 5%, var(--surface)); }
+.nag-card .card-head h2 { display: flex; align-items: center; gap: 8px; }
+.nag-card .card-head h2 svg { color: var(--rust); }
+.nag-row { display: flex; align-items: center; gap: 10px; padding: 8px 0 8px 12px; border-left: 4px solid var(--seg); border-radius: 4px; }
+.nag-row + .nag-row { margin-top: 6px; }
+.nag-main { flex: 1; min-width: 0; display: grid; text-align: left; }
+.nag-main strong { font-weight: 700; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nag-main small { color: var(--muted); font-size: 12.5px; }
