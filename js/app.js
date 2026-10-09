@@ -36,10 +36,19 @@ const CATS = ['Comida (súper, verdulería)', 'Varios (juntadas, taxis, limpieza
   'Impuestos / expensas', 'Viandas (trabajo)', 'Compra de dólares', 'Gimnasio', 'Ropa / Regalos', 'Colectivo', 'Compras departamento',
   'Farmacia / estudios', 'Torneo de fútbol', 'Tarjeta de crédito', 'Posgrado', 'Viajes', 'Sueldo Estudio', 'Cobros extra', 'Rendimientos financieros', 'Otros'];
 const INV_KINDS = ['Plazo fijo', 'FCI', 'Acciones', 'CEDEARs', 'Bonos', 'Cripto', 'Dólares', 'Otro'];
+// Avisos (notificaciones): cuándo avisar
+const REMIND = [['', 'Sin aviso'], ['at', 'A la hora del evento'], ['15m', '15 minutos antes'], ['1h', '1 hora antes'],
+  ['1d', '1 día antes'], ['9am', 'El mismo día a las 9 h']];
+// Colores de la paleta (para destacar, bloqueos y segmentos)
+const PALETTE = [['#D35E36', 'Naranja óxido'], ['#C3963F', 'Arena tostada'], ['#416B66', 'Verde azulado'], ['#2A4343', 'Petróleo'],
+  ['#646756', 'Oliva'], ['#C0C29D', 'Salvia'], ['#F1D49A', 'Crema']];
+const SEGS4 = ['trabajo', 'academico', 'personal', 'cuentas'];
+const DEF_SEG_COLOR = { trabajo: '#416B66', academico: '#646756', personal: '#D35E36', cuentas: '#C3963F' };
+const isHex = (c) => /^#[0-9a-f]{6}$/i.test(c || '');
 
 /* ============================== Estado ============================== */
 const S = {
-  user: null, profile: null, items: [], notes: [], movements: [], investments: [], recurring: [], workload: [], profiles: [], idea_folders: [], ideas: [], share_tokens: [], accounts: [], month_closings: [], user_settings: [], sharedItems: [], sharedRecs: [], ideaFolder: null,
+  user: null, profile: null, items: [], notes: [], movements: [], investments: [], recurring: [], workload: [], profiles: [], idea_folders: [], ideas: [], share_tokens: [], accounts: [], month_closings: [], user_settings: [], blocks: [], push_subscriptions: [], sharedItems: [], sharedRecs: [], sharedBlocks: [], ideaFolder: null, pushHere: null,
   route: 'resumen', tabs: {}, calMonth: monthKey(new Date()), selDay: todayIso(), month: monthKey(new Date()),
 };
 const app = $('#app');
@@ -80,6 +89,7 @@ async function enter() {
   splitShared(); lastLoad = Date.now();
   readRoute();
   render();
+  checkPush();
 }
 // Separa lo propio de lo que el otro usuario compartió (eso solo se ve en el calendario, en segundo plano)
 function splitShared() {
@@ -87,6 +97,7 @@ function splitShared() {
   const mine = (r) => !r.user_id || r.user_id === S.user.id;
   S.sharedItems = S.items.filter((r) => !mine(r)); S.items = S.items.filter(mine);
   S.sharedRecs = S.recurring.filter((r) => !mine(r)); S.recurring = S.recurring.filter(mine);
+  S.sharedBlocks = S.blocks.filter((r) => !mine(r)); S.blocks = S.blocks.filter(mine);
 }
 // Nombre del otro usuario (para "Compartir con …" y "de …")
 function otherName(uid) {
@@ -111,6 +122,13 @@ function visibleTabs(seg) {
   const t = SEG[seg].tabs.filter(([k]) => !hid.includes(k));
   return t.length ? t : SEG[seg].tabs.slice(0, 1);
 }
+// Calendario: colores, orden de la lista del día y qué se muestra (cada usuario el suyo)
+const calPrefs = () => ({ order: 'hora', segOrder: SEGS4, hide: [], chips: 3, colors: {}, ...(prefs().cal || {}) });
+const segColor = (k) => { const c = calPrefs().colors?.[k]; return isHex(c) ? c : DEF_SEG_COLOR[k]; };
+function applyColors() {
+  const st = document.documentElement.style;
+  SEGS4.forEach((k) => st.setProperty(`--c-${k}`, segColor(k)));
+}
 function catList(type) {
   const saved = prefs().categories?.[type];
   if (saved) return saved;
@@ -134,31 +152,45 @@ function renderLogin(err) {
   app.innerHTML = `
   <main class="login">
     <div class="login-art" aria-hidden="true"><span class="sun"></span><span class="hill h1"></span><span class="hill h2"></span><span class="hill h3"></span></div>
-    <form class="login-card" id="loginForm">
+    <form class="login-card" id="loginForm" method="post" action="./__login" target="loginSink" autocomplete="on">
       <div class="brand big"><span class="logo"></span>Órbita</div>
       <p class="muted">Tu organización personal, en un solo lugar.</p>
       ${db.DEMO ? `<div class="demo-note">Modo demo: los datos quedan solo en este navegador. Elegí un usuario o escribí cualquier mail.</div>
         <div class="demo-users"><button type="button" class="btn soft" data-demo="uriel@demo">Entrar como Uriel</button>
         <button type="button" class="btn soft" data-demo="martina@demo">Entrar como Martina</button></div>` : ''}
-      <label class="field"><span>Mail</span><input name="email" type="email" autocomplete="username" required></label>
-      <label class="field"><span>Contraseña</span><input name="password" type="password" autocomplete="current-password" ${db.DEMO ? '' : 'required'}></label>
+      <label class="field"><span>Mail</span><input id="email" name="email" type="email" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+      <label class="field"><span>Contraseña</span><input id="password" name="password" type="password" autocomplete="current-password" ${db.DEMO ? '' : 'required'}></label>
       <p class="form-error">${esc(err || '')}</p>
       <button class="btn primary block" type="submit">Ingresar</button>
     </form>
   </main>`;
+  // Marco invisible: recibe el envío "real" del formulario para que el iPhone ofrezca guardar la contraseña.
+  // El service worker lo responde ahí mismo: la contraseña no viaja a ningún servidor.
+  if (!$('#loginSink')) document.body.insertAdjacentHTML('beforeend', '<iframe name="loginSink" id="loginSink" title="" hidden></iframe>');
   const f = $('#loginForm');
   const go = async (email, pw) => {
     f.querySelector('[type=submit]').disabled = true;
-    try { S.user = await db.signIn(email, pw); if (db.DEMO && email === 'martina@demo') CONFIG.nombres[email] = 'Martina';
-      if (db.DEMO && email === 'uriel@demo') CONFIG.nombres[email] = 'Uriel'; location.hash = '#/resumen'; await enter(); }
-    catch (e) { $('.form-error', f).textContent = e.message; f.querySelector('[type=submit]').disabled = false; }
+    try {
+      S.user = await db.signIn(email, pw); if (db.DEMO && email === 'martina@demo') CONFIG.nombres[email] = 'Martina';
+      if (db.DEMO && email === 'uriel@demo') CONFIG.nombres[email] = 'Uriel';
+      if (pw && navigator.serviceWorker?.controller) {             // envío nativo → Safari/Chrome ofrecen "Guardar contraseña"
+        f.dataset.native = '1';
+        try { f.requestSubmit ? f.requestSubmit() : f.submit(); } catch {}
+        await new Promise((r) => setTimeout(r, 350));
+      }
+      location.hash = '#/resumen'; await enter();
+    } catch (e) { $('.form-error', f).textContent = e.message; f.querySelector('[type=submit]').disabled = false; }
   };
-  f.addEventListener('submit', (e) => { e.preventDefault(); go(f.email.value.trim(), f.password.value); });
+  f.addEventListener('submit', (e) => {
+    if (f.dataset.native === '1') return;                        // segundo envío: lo deja pasar al marco invisible
+    e.preventDefault(); go(f.email.value.trim(), f.password.value);
+  });
   $$('[data-demo]', f).forEach((b) => b.addEventListener('click', () => go(b.dataset.demo, '')));
 }
 
 /* ============================== Shell ============================== */
 function render() {
+  applyColors();
   const nav = Object.entries(SEG).map(([k, s]) => `
     <a href="#/${k}" class="nav-link ${S.route === k ? 'active' : ''}" style="--seg:${s.color || 'var(--sand)'}">
       ${icon(s.icon)}<span>${s.label}</span></a>`).join('');
@@ -292,38 +324,77 @@ function freqText(r) {
 }
 
 /* ============================== Eventos (calendario) ============================== */
+// Color con que se destaca un evento ('seg' = el de su segmento); solo valores seguros
+const hlColor = (h, seg) => (h === 'seg' ? `var(--c-${seg})` : isHex(h) ? h : null);
+// Texto claro u oscuro según qué tan claro es el color de fondo
+function inkFor(c) {
+  if (!isHex(c)) return '#fff';
+  const n = parseInt(c.slice(1), 16);
+  return (0.299 * (n >> 16 & 255) + 0.587 * (n >> 8 & 255) + 0.114 * (n & 255)) / 255 > 0.62 ? '#2A4343' : '#fff';
+}
+const hlInk = (h, seg) => inkFor(h === 'seg' ? segColor(seg) : h);
 function events(from, to) {
   const ev = [];
   const inR = (d) => d && d >= from && d <= to;
   for (const it of S.items) if (inR(it.due_date)) ev.push({
-    date: it.due_date, time: hhmm(it.due_time), title: it.title, seg: it.segment, tag: KIND[it.kind] || '',
-    done: it.status === 'hecho', type: 'item', id: it.id });
+    date: it.due_date, time: hhmm(it.due_time), title: it.title, seg: it.segment, tag: KIND[it.kind] || '', kind: it.kind,
+    done: it.status === 'hecho', type: 'item', id: it.id, hl: hlColor(it.highlight, it.segment), hk: hlInk(it.highlight, it.segment), remind: it.remind });
   for (const m of S.movements) if (!m.paid && inR(m.date)) ev.push({
     date: m.date, title: `Pagar: ${m.description || m.category || 'gasto'}`, sub: money(m.amount, m.currency),
-    seg: 'cuentas', tag: 'Vencimiento', type: 'mov', id: m.id });
+    seg: 'cuentas', tag: 'Vencimiento', type: 'mov', id: m.id, remind: m.remind });
   for (const v of S.investments) if (v.active && inR(v.maturity_date)) ev.push({
     date: v.maturity_date, title: `Vence: ${v.name}`, sub: money(v.current_value ?? v.invested, v.currency),
     seg: 'cuentas', tag: 'Inversión', type: 'inv', id: v.id });
   for (const r of S.recurring) for (const d of occurrences(r, from, to)) ev.push({
-    date: d, time: hhmm(r.due_time), title: r.title, seg: r.segment,
+    date: d, time: hhmm(r.due_time), title: r.title, seg: r.segment, kind: r.kind, annual: r.freq === 'anual',
     tag: r.segment === 'cuentas' ? 'Vencimiento fijo' : (KIND[r.kind] || 'Recurrente'),
-    sub: r.amount ? `aprox. ${money(r.amount, r.currency)}` : '', done: isDone(r, d), type: 'rec', id: r.id });
+    sub: r.amount ? `aprox. ${money(r.amount, r.currency)}` : '', done: isDone(r, d), type: 'rec', id: r.id,
+    hl: hlColor(r.highlight, r.segment), hk: hlInk(r.highlight, r.segment), remind: r.remind });
   // Compartido por el otro usuario: va en segundo plano
   for (const it of S.sharedItems) if (inR(it.due_date)) ev.push({
-    date: it.due_date, time: hhmm(it.due_time), title: it.title, seg: it.segment, tag: KIND[it.kind] || '',
+    date: it.due_date, time: hhmm(it.due_time), title: it.title, seg: it.segment, tag: KIND[it.kind] || '', kind: it.kind,
     done: it.status === 'hecho', type: 'shared', id: it.id, theirs: otherName(it.user_id) });
   for (const r of S.sharedRecs) for (const d of occurrences(r, from, to)) ev.push({
-    date: d, time: hhmm(r.due_time), title: r.title, seg: r.segment, tag: KIND[r.kind] || 'Recurrente',
+    date: d, time: hhmm(r.due_time), title: r.title, seg: r.segment, tag: KIND[r.kind] || 'Recurrente', kind: r.kind, annual: r.freq === 'anual',
     done: isDone(r, d), type: 'sharedrec', id: r.id, theirs: otherName(r.user_id) });
   return ev.sort((a, b) => (!!a.theirs - !!b.theirs) || (a.date + (a.time || '99')).localeCompare(b.date + (b.time || '99')));
 }
+// Lo que cada usuario eligió ver en el calendario
+function calFilter(ev) {
+  const h = calPrefs().hide || [];
+  return ev.filter((e) => !h.includes('seg:' + e.seg) && !(e.theirs && h.includes('theirs')) && !(e.done && h.includes('done'))
+    && !((e.kind === 'cumpleanos' || e.annual) && h.includes('cumple')) && !(e.type === 'inv' && h.includes('inv')));
+}
+// Orden de los eventos de un mismo día, según la preferencia del usuario
+function sortDay(list) {
+  const p = calPrefs();
+  const so = (p.segOrder || SEGS4);
+  const tm = (e) => e.time || '99';
+  return [...list].sort((a, b) => (!!a.theirs - !!b.theirs)
+    || (p.order === 'destacados' ? !a.hl - !b.hl : 0)
+    || (p.order === 'segmento' ? so.indexOf(a.seg) - so.indexOf(b.seg) : 0)
+    || tm(a).localeCompare(tm(b)));
+}
 const evRow = (e) => `
-  <button class="ev-row ${e.done ? 'done' : ''} ${e.theirs ? 'theirs' : ''}" style="--seg:var(--c-${e.seg})" data-action="open-ref" data-type="${e.type}" data-id="${e.id}" data-date="${e.date}">
+  <button class="ev-row ${e.done ? 'done' : ''} ${e.theirs ? 'theirs' : ''} ${e.hl ? 'hl' : ''}" style="--seg:var(--c-${e.seg})${e.hl ? `;--hl:${e.hl};--hl-ink:${e.hk}` : ''}" data-action="open-ref" data-type="${e.type}" data-id="${e.id}" data-date="${e.date}">
     <span class="ev-bar"></span>
-    <span class="ev-main"><strong>${esc(e.title)}</strong>
+    <span class="ev-main"><strong>${e.hl ? icon('star', 13) : ''}${esc(e.title)}</strong>
       <small>${e.theirs ? `${icon('users', 12)} De ${esc(e.theirs)} · ` : ''}${esc(SEG[e.seg].label)}${e.tag ? ' · ' + esc(e.tag) : ''}${e.sub ? ' · ' + esc(e.sub) : ''}</small></span>
+    ${e.remind && !e.done ? `<span class="ev-bell" title="Con aviso">${icon('bell', 13)}</span>` : ''}
     ${e.done ? `<span class="ev-ok">${icon('check', 15)}</span>` : e.time ? `<span class="ev-time">${e.time}</span>` : ''}
   </button>`;
+
+/* ---------- Bloqueos de días (vacaciones, viajes) ---------- */
+const blkColor = (b) => (isHex(b.color) ? b.color : '#C0C29D');
+function blocksOn(day) {
+  if ((calPrefs().hide || []).includes('blocks')) return [];
+  return [...S.blocks, ...S.sharedBlocks.map((b) => ({ ...b, theirs: otherName(b.user_id) }))]
+    .filter((b) => b.start_date <= day && b.end_date >= day).sort((a, b) => a.start_date.localeCompare(b.start_date));
+}
+const shortDate = (d) => fmtDate(d, { day: 'numeric', month: 'short' });
+const blkRange = (b) => b.start_date === b.end_date ? shortDate(b.start_date) : `${shortDate(b.start_date)} al ${shortDate(b.end_date)}`;
+const blkBanner = (b) => `<button class="blk-banner ${b.theirs ? 'theirs' : ''}" style="--blk:${blkColor(b)}" data-action="${b.theirs ? 'view-block' : 'edit-block'}" data-id="${b.id}">
+    ${icon('sun', 16)}<span><strong>${esc(b.title)}</strong><small>${b.theirs ? `De ${esc(b.theirs)} · ` : ''}${blkRange(b)}</small></span></button>`;
 
 // Carga de trabajo de un mes (1–12) según el plan anual: 0 libre … 3 alta
 function workLevel(m) {
@@ -344,11 +415,14 @@ function viewResumen() {
   const from = iso(gStart) < t ? iso(gStart) : t;
   const to = iso(gEnd) > in14 ? iso(gEnd) : in14;
   const selFrom = S.selDay < from ? S.selDay : from, selTo = S.selDay > to ? S.selDay : to;
-  const ev = events(selFrom, selTo);
+  const evAll = events(selFrom, selTo);     // los indicadores usan todo
+  const ev = calFilter(evAll);              // el calendario y las listas, lo que el usuario eligió ver
+  const cp = calPrefs(), hide = cp.hide || [];
+  const nChips = Math.min(5, Math.max(2, Number(cp.chips) || 3));
 
   const open = S.items.filter((i) => i.status !== 'hecho');
   const overdue = open.filter((i) => i.due_date && i.due_date < t).length;
-  const week = ev.filter((e) => !e.theirs && !e.done && e.date >= t && diffDays(e.date) < 7).length;
+  const week = evAll.filter((e) => !e.theirs && !e.done && e.date >= t && diffDays(e.date) < 7).length;
   const nextTurno = S.items.filter((i) => (i.kind === 'turno' || i.kind === 'salud') && i.status !== 'hecho' && i.due_date >= t)
     .sort((a, b) => (a.due_date + (a.due_time || '')).localeCompare(b.due_date + (b.due_time || '')))[0];
   const mk = monthKey(new Date());
@@ -359,21 +433,32 @@ function viewResumen() {
   // Calendario mensual
   const byDay = {};
   ev.forEach((e) => (byDay[e.date] ||= []).push(e));
-  const cells = days.map((d) => {
+  Object.keys(byDay).forEach((k) => { byDay[k] = sortDay(byDay[k]); });
+  const cells = days.map((d, i) => {
     const k = iso(d); const list = byDay[k] || [];
-    const cls = [k === t && 'today', k < t && 'past', k === S.selDay && 'sel', d.getMonth() !== cm - 1 && 'out'].filter(Boolean).join(' ');
-    return `<button class="cal-cell ${cls}" data-action="sel-day" data-date="${k}">
+    const blk = blocksOn(k)[0];
+    // El nombre del bloqueo se escribe el primer día y al principio de cada semana
+    const blkLabel = blk && (k === blk.start_date || i % 7 === 0);
+    const cls = [k === t && 'today', k < t && 'past', k === S.selDay && 'sel', d.getMonth() !== cm - 1 && 'out', blk && 'blocked',
+      blk && k === blk.start_date && 'blk-start', blk && k === blk.end_date && 'blk-end'].filter(Boolean).join(' ');
+    return `<button class="cal-cell ${cls}" data-action="sel-day" data-date="${k}" ${blk ? `style="--blk:${blkColor(blk)};--blk-ink:${inkFor(blkColor(blk))}" title="${esc(blk.title)}"` : ''}>
       <span class="cal-num">${d.getDate()}</span>
-      <span class="chips">${list.slice(0, 3).map((e) => `<span class="chip ${e.done ? 'done' : ''} ${e.theirs ? 'theirs' : ''}" style="--seg:var(--c-${e.seg})" title="${e.theirs ? 'De ' + esc(e.theirs) : ''}">${esc(e.title)}</span>`).join('')}
-        ${list.length > 3 ? `<span class="more">+${list.length - 3} más</span>` : ''}</span>
-      <span class="dots">${list.slice(0, 4).map((e) => `<i style="--seg:var(--c-${e.seg})" class="${e.done ? 'done' : ''} ${e.theirs ? 'theirs' : ''}"></i>`).join('')}</span>
+      ${blkLabel ? `<span class="blk-label">${esc(blk.title)}</span>` : ''}
+      <span class="chips">${list.slice(0, nChips).map((e) => `<span class="chip ${e.done ? 'done' : ''} ${e.theirs ? 'theirs' : ''} ${e.hl ? 'hl' : ''}" style="--seg:var(--c-${e.seg})${e.hl ? `;--hl:${e.hl};--hl-ink:${e.hk}` : ''}" title="${e.theirs ? 'De ' + esc(e.theirs) : ''}">${esc(e.title)}</span>`).join('')}
+        ${list.length > nChips ? `<span class="more">+${list.length - nChips} más</span>` : ''}</span>
+      <span class="dots">${list.slice(0, 4).map((e) => `<i style="--seg:var(--c-${e.seg})${e.hl ? `;--hl:${e.hl};--hl-ink:${e.hk}` : ''}" class="${e.done ? 'done' : ''} ${e.theirs ? 'theirs' : ''} ${e.hl ? 'hl' : ''}"></i>`).join('')}</span>
     </button>`;
   }).join('');
-  const wl = S.workload.length ? workLevel(cm) : null;
+  const wl = S.workload.length && !hide.includes('load') ? workLevel(cm) : null;
   const sel = byDay[S.selDay] || [];
+  const selBlocks = blocksOn(S.selDay);
+  // Bloqueos que están en curso o empiezan en las próximas 2 semanas
+  const blkSoon = hide.includes('blocks') ? [] : [...S.blocks, ...S.sharedBlocks.map((b) => ({ ...b, theirs: otherName(b.user_id) }))]
+    .filter((b) => b.end_date >= t && b.start_date <= in14).sort((a, b) => a.start_date.localeCompare(b.start_date));
   const upcoming = ev.filter((e) => !e.done && e.date >= t && e.date <= in14);
   const groups = {};
   upcoming.forEach((e) => (groups[e.date] ||= []).push(e));
+  Object.keys(groups).forEach((k) => { groups[k] = sortDay(groups[k]); });
 
   const segCard = (k) => {
     const s = SEG[k];
@@ -422,18 +507,23 @@ function viewResumen() {
             <button class="icon-btn" data-action="cal-month" data-n="-1" aria-label="Mes anterior">${icon('left', 18)}</button>
             <button class="btn soft sm" data-action="cal-today">Hoy</button>
             <button class="icon-btn" data-action="cal-month" data-n="1" aria-label="Mes siguiente">${icon('right', 18)}</button>
+            <button class="icon-btn" data-action="cal-settings" title="Personalizar el calendario" aria-label="Personalizar el calendario">${icon('sliders', 18)}</button>
           </div>
         </div>
-        <div class="legend">${['trabajo', 'academico', 'personal', 'cuentas'].map((k) => `<span style="--seg:var(--c-${k})"><i></i>${SEG[k].label}</span>`).join('')}</div>
+        <div class="legend">${SEGS4.filter((k) => !hide.includes('seg:' + k)).map((k) => `<span style="--seg:var(--c-${k})"><i></i>${SEG[k].label}</span>`).join('')}
+          ${!hide.includes('blocks') && (S.blocks.length || S.sharedBlocks.length) ? `<span class="lg-blk"><i></i>Bloqueado</span>` : ''}</div>
         <div class="cal month">${DIAS.map((d) => `<span class="cal-dow">${d}</span>`).join('')}${cells}</div>
       </div>
       <div class="side-col">
         <div class="card">
-          <div class="card-head"><h2>${S.selDay === t ? 'Hoy' : fmtLong(S.selDay)}</h2></div>
-          ${sel.length ? `<div class="ev-list">${sel.map(evRow).join('')}</div>` : '<p class="empty">Nada agendado para este día.</p>'}
+          <div class="card-head"><h2>${S.selDay === t ? 'Hoy' : fmtLong(S.selDay)}</h2>
+            <button class="btn soft sm" data-action="new-block" data-date="${S.selDay}" title="Marcar días bloqueados (vacaciones, viaje)">${icon('sun', 15)} Bloquear días</button></div>
+          ${selBlocks.map(blkBanner).join('')}
+          ${sel.length ? `<div class="ev-list">${sel.map(evRow).join('')}</div>` : `<p class="empty">${selBlocks.length ? 'Sin actividades: día bloqueado.' : 'Nada agendado para este día.'}</p>`}
         </div>
         <div class="card">
           <div class="card-head"><h2>Próximos 14 días</h2></div>
+          ${blkSoon.map(blkBanner).join('')}
           ${Object.keys(groups).length ? Object.entries(groups).map(([d, l]) =>
             `<div class="day-group"><h4>${relDay(d)}${diffDays(d) < 7 && diffDays(d) > 1 ? ` · ${fmtDate(d, { weekday: 'long' })}` : ''}</h4>${l.map(evRow).join('')}</div>`).join('')
             : '<p class="empty">Sin actividades en las próximas dos semanas.</p>'}
@@ -460,7 +550,8 @@ function viewBoard(seg) {
       const late = i.due_date && i.due_date < t && st !== 'hecho';
       const nk = C[ci + 1];
       const next = !nk ? [keys[0], 'undo', `Volver a ${C[0][1]}`] : nk[0] === 'hecho' ? ['hecho', 'check', 'Marcar hecho'] : [nk[0], 'arrow', `Pasar a ${nk[1]}`];
-      return `<article class="task prio-${i.priority}" draggable="true" data-id="${i.id}" data-action="edit-item">
+      const hl = hlColor(i.highlight, seg);
+      return `<article class="task prio-${i.priority} ${hl ? 'hl' : ''}" ${hl ? `style="--hl:${hl};--hl-ink:${hlInk(i.highlight, seg)}"` : ''} draggable="true" data-id="${i.id}" data-action="edit-item">
         <div class="task-top"><span class="tag">${esc(KIND[i.kind] || 'Tarea')}</span>${i.shared ? `<span class="shared-mini" title="Compartido con ${esc(otherName())}">${icon('users', 13)}</span>` : ''}<span class="prio" title="Prioridad ${i.priority}"></span></div>
         <h4>${esc(i.title)}</h4>
         ${i.description ? `<p class="desc">${esc(i.description.slice(0, 110))}</p>` : ''}
@@ -621,6 +712,7 @@ function viewPerfil() {
             <button class="btn soft" data-action="change-pw">Actualizar contraseña</button>
           </div>
         </div>
+        ${pushCard()}
         ${dataCard()}
         ${shortcutCard()}
         <div class="card">
@@ -1180,6 +1272,25 @@ function viewInversiones() {
 }
 
 /* ============================== Formularios ============================== */
+// "Avisarme": cuándo mandar la notificación
+function remindField(value, label = 'Avisarme (notificación)') {
+  const hint = `${S.pushHere || db.DEMO ? '' : '<b>Activá las notificaciones en Mi perfil</b> para que te lleguen a este dispositivo. '}Si no tiene hora, se toman las 9 h.`;
+  return `${field({ name: 'remind', label, type: 'select', value: value || '', options: REMIND })}
+    <p class="remind-hint full" ${value ? '' : 'hidden'}>${icon('bell', 14)}<span>${hint}</span></p>`;
+}
+function bindRemind(root) {
+  const sel = root.querySelector('[name=remind]'), h = root.querySelector('.remind-hint');
+  if (sel && h) sel.addEventListener('change', () => { h.hidden = !sel.value; });
+}
+// "Destacar en el calendario": color propio para que llame la atención
+function hlField(value) {
+  const opts = [['', 'Sin destacar'], ['seg', 'Color del segmento'], ...PALETTE];
+  const cur = value === 'seg' || isHex(value) ? value : '';
+  return `<div class="full"><span class="lbl">Destacar en el calendario</span>
+    <div class="swatches">${opts.map(([v, l]) => `<label class="sw" title="${esc(l)}"><input type="radio" name="highlight" value="${v}" ${cur.toLowerCase() === v.toLowerCase() ? 'checked' : ''} aria-label="${esc(l)}">
+      <span class="${v === '' ? 'none' : ''}" style="${v === 'seg' ? '--c:var(--accent)' : v ? `--c:${v}` : ''}">${v === '' ? 'No' : v === 'seg' ? icon('star', 14) : ''}</span></label>`).join('')}</div>
+    <small class="muted">Se ve más fuerte en el calendario y, si querés, primero en la lista del día (Personalizar calendario).</small></div>`;
+}
 function itemForm(seg, item = {}, preset = {}) {
   const s = SEG[seg];
   const kind = item.kind || preset.kind || s.kinds[0];
@@ -1197,9 +1308,11 @@ function itemForm(seg, item = {}, preset = {}) {
       ${field({ name: 'due_date', label: 'Fecha', type: 'date', value: item.due_date || preset.date })}
       ${field({ name: 'due_time', label: 'Hora', type: 'time', value: hhmm(item.due_time) })}
       <div class="quick-dates full"><span>Fecha rápida, desde hoy:</span>${steps.map(([k, l]) => `<button type="button" class="qd" data-step="${k}">+ ${l}</button>`).join('')}</div>
+      ${remindField(item.remind)}
       ${field({ name: 'priority', label: 'Prioridad', type: 'select', value: item.priority || 'media', options: PRIO })}
       ${field({ name: 'location', label: isTurno ? 'Profesional / lugar' : 'Lugar (opcional)', value: item.location })}
       ${field({ name: 'description', label: 'Notas', type: 'textarea', value: item.description, full: true })}
+      ${hlField(item.highlight)}
       ${db.DEMO ? '' : field({ name: 'shared', label: `Compartir con ${otherName()} (lo ve en su calendario, sin poder editarlo)`, type: 'checkbox', value: item.shared, full: true })}`,
     onSubmit: async (d) => {
       const row = { ...d, segment: seg };
@@ -1207,6 +1320,7 @@ function itemForm(seg, item = {}, preset = {}) {
     },
     onDelete: item.id ? () => del('items', item.id) : null,
   });
+  bindRemind(root);
   root.querySelectorAll('[data-step]').forEach((b) => b.addEventListener('click', () => {
     const k = b.dataset.step, n = Number(k.slice(1));
     root.querySelector('[name=due_date]').value = iso(k[0] === 'd' ? addDays(today(), n) : addMonths(today(), n));
@@ -1248,12 +1362,14 @@ function recForm(seg, r = {}, preset = {}) {
       ${wrap('anual', field({ name: 'month', label: 'Mes', type: 'select', value: r.month || today().getMonth() + 1, options: MESES.map((m, i) => [i + 1, cap(m)]) }))}
       ${wrap('semanal', field({ name: 'weekday', label: 'Día de la semana', type: 'select', value: r.weekday ?? 0, options: DIAS_PL.map((d, i) => [i, cap(d)]) }))}
       ${field({ name: 'due_time', label: 'Hora (opcional)', type: 'time', value: hhmm(r.due_time) })}
+      ${remindField(r.remind, 'Avisarme cada vez')}
       ${seg === 'cuentas' ? `
         ${field({ name: 'amount', label: 'Monto aproximado (opcional)', type: 'number', value: r.amount, step: '0.01', inputmode: 'decimal' })}
         ${field({ name: 'currency', label: 'Moneda', type: 'select', value: r.currency || 'ARS', options: [['ARS', 'Pesos (ARS)'], ['USD', 'Dólares (USD)']] })}` : ''}
       ${field({ name: 'start_date', label: 'Desde', type: 'date', value: r.start_date || todayIso() })}
       ${field({ name: 'end_date', label: 'Hasta (opcional)', type: 'date', value: r.end_date })}
       ${field({ name: 'notes', label: 'Notas', type: 'textarea', value: r.notes, full: true })}
+      ${hlField(r.highlight)}
       ${r.id ? field({ name: 'active', label: 'Activo (destildalo para pausarlo sin borrarlo)', type: 'checkbox', value: r.active !== false, full: true }) : ''}
       ${db.DEMO || seg === 'cuentas' ? '' : field({ name: 'shared', label: `Compartir con ${otherName()} (lo ve en su calendario)`, type: 'checkbox', value: r.shared, full: true })}`,
     onSubmit: async (d) => {
@@ -1273,6 +1389,7 @@ function recForm(seg, r = {}, preset = {}) {
     },
     onDelete: r.id ? () => del('recurring', r.id) : null,
   });
+  bindRemind(root);
   const months = new Set((r.months || []).map(Number));
   const paint = () => root.querySelectorAll('.mp').forEach((b) => b.classList.toggle('on', months.has(Number(b.dataset.m))));
   root.querySelectorAll('.mp').forEach((b) => b.addEventListener('click', () => { const m = Number(b.dataset.m); months.has(m) ? months.delete(m) : months.add(m); paint(); }));
@@ -1353,10 +1470,12 @@ function movForm(m = {}) {
       <div class="full cat-link"><button type="button" class="btn ghost sm" data-action="customize" data-seg="cuentas">${icon('edit', 14)} Editar mis categorías</button></div>
       ${field({ name: 'currency', label: 'Moneda', type: 'select', value: m.currency || 'ARS', options: [['ARS', 'Pesos (ARS)'], ['USD', 'Dólares (USD)']] })}
       ${field({ name: 'amount', label: 'Monto', type: 'number', value: m.amount, required: true, step: '0.01', inputmode: 'decimal' })}
-      ${field({ name: 'paid', label: 'Ya está pagado / cobrado (si no, queda como vencimiento en el calendario)', type: 'checkbox', value: m.id ? m.paid : true, full: true })}`,
+      ${field({ name: 'paid', label: 'Ya está pagado / cobrado (si no, queda como vencimiento en el calendario)', type: 'checkbox', value: m.id ? m.paid : true, full: true })}
+      <div class="full mov-remind" ${m.id && !m.paid ? '' : 'hidden'}><div class="form-grid">${remindField(m.remind, 'Avisarme del vencimiento')}</div></div>`,
     onSubmit: async (d) => {
       d.amount = Number(String(d.amount).replace(',', '.'));
       if (!(d.amount > 0)) throw new Error('El monto tiene que ser mayor a cero.');
+      if (d.paid) d.remind = null;
       if (m.id) await save('movements', m.id, d, true); else await add('movements', d);
       // Una categoría nueva escrita a mano queda guardada en mi lista
       const list = catList(d.type);
@@ -1367,6 +1486,9 @@ function movForm(m = {}) {
     onDelete: m.id ? () => del('movements', m.id) : null,
   });
   bindMovType(root);
+  bindRemind(root);
+  const pd = root.querySelector('[name=paid]');
+  pd.addEventListener('change', () => { root.querySelector('.mov-remind').hidden = pd.checked; });
 }
 
 function bindMovType(root) {
@@ -1444,6 +1566,156 @@ function customizeForm(seg) {
   return root;
 }
 
+/* ---------- Bloqueos de días (vacaciones, viajes) ---------- */
+function blockForm(b = {}, preset = {}) {
+  const start = b.start_date || preset.date || todayIso();
+  const color = isHex(b.color) ? b.color : '#C0C29D';
+  const root = openModal({
+    title: b.id ? 'Editar bloqueo' : 'Bloquear días', accent: color,
+    body: `<p class="muted small full">Para vacaciones, viajes o días ocupados: quedan pintados en el calendario. No cambia nada de lo que ya tenés cargado.</p>
+      ${field({ name: 'title', label: 'Nombre', value: b.title, required: true, full: true, placeholder: 'Ej: Vacaciones, Viaje a Córdoba' })}
+      ${field({ name: 'start_date', label: 'Desde', type: 'date', value: start, required: true })}
+      ${field({ name: 'end_date', label: 'Hasta (inclusive)', type: 'date', value: b.end_date || start, required: true })}
+      <div class="full"><span class="lbl">Color</span>
+        <div class="swatches">${PALETTE.map(([c, l]) => `<label class="sw" title="${esc(l)}"><input type="radio" name="color" value="${c}" ${c.toLowerCase() === color.toLowerCase() ? 'checked' : ''} aria-label="${esc(l)}"><span style="--c:${c}"></span></label>`).join('')}</div></div>
+      ${field({ name: 'notes', label: 'Notas (opcional)', type: 'textarea', value: b.notes, full: true })}
+      ${db.DEMO ? '' : field({ name: 'shared', label: `Compartir con ${otherName()} (lo ve marcado en su calendario)`, type: 'checkbox', value: b.shared, full: true })}`,
+    onSubmit: async (d) => {
+      if (d.end_date < d.start_date) throw new Error('La fecha "Hasta" es anterior a "Desde".');
+      if (b.id) await save('blocks', b.id, d, true); else await add('blocks', d);
+    },
+    onDelete: b.id ? () => del('blocks', b.id) : null,
+  });
+  const s0 = root.querySelector('[name=start_date]'), e0 = root.querySelector('[name=end_date]');
+  s0.addEventListener('change', () => { if (!e0.value || e0.value < s0.value) e0.value = s0.value; });
+  root.querySelectorAll('[name=color]').forEach((r) => r.addEventListener('change', () => root.querySelector('.modal').style.setProperty('--accent', r.value)));
+}
+function blockView(b) {
+  openModal({
+    title: b.title, accent: blkColor(b),
+    body: `<div class="occ full"><p class="shared-pill">${icon('users', 13)} Compartido por ${esc(otherName(b.user_id))}</p>
+      <p><strong>${blkRange(b)}</strong></p>${b.notes ? `<p class="occ-notes">${esc(b.notes)}</p>` : ''}
+      <p class="muted small">Solo ${esc(otherName(b.user_id))} puede modificarlo.</p></div>`,
+  });
+}
+
+/* ---------- Personalizar el calendario (cada usuario el suyo) ---------- */
+function calSettingsForm() {
+  const p = calPrefs(), hide = p.hide || [];
+  const SHOW = [['seg:trabajo', 'Trabajo'], ['seg:academico', 'Académico'], ['seg:personal', 'Personal'], ['seg:cuentas', 'Cuentas'],
+    ['cumple', 'Cumpleaños y fechas anuales'], ['theirs', `Lo que comparte ${otherName()}`], ['done', 'Lo ya hecho o pagado'],
+    ['inv', 'Vencimientos de inversiones'], ['blocks', 'Días bloqueados (vacaciones)'], ['load', 'Carga de trabajo del mes']];
+  const ORDER = [['hora', 'Por hora', 'Lo que tiene hora, en orden; lo que no, al final.'],
+    ['destacados', 'Destacados primero', 'Arriba lo que marcaste como destacado; después por hora.'],
+    ['segmento', 'Por segmento', 'Agrupado en el orden que elijas abajo; dentro de cada uno, por hora.']];
+  const so = (p.segOrder || SEGS4).filter((k) => SEGS4.includes(k));
+  SEGS4.forEach((k) => { if (!so.includes(k)) so.push(k); });
+  const root = openModal({
+    title: 'Personalizar el calendario', wide: true,
+    body: `<p class="muted small full">Solo para vos: ${esc(otherName())} no ve ninguna diferencia.</p>
+      <div class="full"><h4 class="sub">Colores de los segmentos</h4>
+        ${SEGS4.map((k) => `<div class="color-row"><span class="seg-name"><i data-prev="${k}" style="background:${segColor(k)}"></i>${SEG[k].label}</span>
+          <div class="swatches sm">${PALETTE.map(([c, l]) => `<button type="button" class="sw-btn" data-seg="${k}" data-c="${c}" style="--c:${c}" title="${esc(l)}" aria-label="${esc(l)}"></button>`).join('')}
+            <input type="color" name="color_${k}" value="${segColor(k).toLowerCase()}" title="Otro color" aria-label="Otro color para ${SEG[k].label}"></div></div>`).join('')}
+        <button type="button" class="btn ghost sm" data-reset-colors>Volver a los colores originales</button></div>
+      <div class="full"><h4 class="sub">Orden de la lista de cada día</h4>
+        <div class="order-opts">${ORDER.map(([v, l, h]) => `<label class="radio-card"><input type="radio" name="order" value="${v}" ${p.order === v ? 'checked' : ''}>
+          <span><strong>${l}</strong><small>${h}</small></span></label>`).join('')}</div>
+        <div class="seg-order" ${p.order === 'segmento' ? '' : 'hidden'}>${so.map((k) => `<div class="so-row" data-segord="${k}" style="--seg:var(--c-${k})">
+          <i></i><span>${SEG[k].label}</span><button type="button" class="icon-btn sm" data-mv="-1" aria-label="Subir">${icon('up', 16)}</button>
+          <button type="button" class="icon-btn sm" data-mv="1" aria-label="Bajar">${icon('down', 16)}</button></div>`).join('')}</div></div>
+      <div class="full"><h4 class="sub">Qué se ve en el calendario y en las listas</h4>
+        <div class="tab-checks">${SHOW.map(([k, l]) => `<label class="check"><input type="checkbox" name="show_${k}" ${hide.includes(k) ? '' : 'checked'}><span>${esc(l)}</span></label>`).join('')}</div>
+        <p class="muted small">Ocultar no borra nada. Los indicadores de arriba siguen contando todo.</p></div>
+      ${field({ name: 'chips', label: 'Eventos que se ven por día (en la compu)', type: 'select', value: String(p.chips || 3), options: [['2', '2'], ['3', '3'], ['4', '4'], ['5', '5']] })}`,
+    onSubmit: async (d, form) => {
+      const colors = {};
+      SEGS4.forEach((k) => { const v = d['color_' + k]; if (isHex(v) && v.toLowerCase() !== DEF_SEG_COLOR[k].toLowerCase()) colors[k] = v; });
+      const nh = SHOW.filter(([k]) => !d['show_' + k]).map(([k]) => k);
+      if (SEGS4.every((k) => nh.includes('seg:' + k))) throw new Error('Dejá al menos un segmento visible.');
+      const segOrder = [...form.querySelectorAll('[data-segord]')].map((x) => x.dataset.segord);
+      await savePrefs({ cal: { order: d.order || 'hora', segOrder, hide: nh, chips: Number(d.chips) || 3, colors } });
+      render(); toast('Listo, guardado solo para vos');
+    },
+  });
+  const setColor = (k, c) => { root.querySelector(`[name=color_${k}]`).value = c.toLowerCase(); root.querySelector(`[data-prev=${k}]`).style.background = c; };
+  root.querySelectorAll('.sw-btn').forEach((b) => b.addEventListener('click', () => setColor(b.dataset.seg, b.dataset.c)));
+  SEGS4.forEach((k) => root.querySelector(`[name=color_${k}]`).addEventListener('input', (e) => { root.querySelector(`[data-prev=${k}]`).style.background = e.target.value; }));
+  root.querySelector('[data-reset-colors]').addEventListener('click', () => SEGS4.forEach((k) => setColor(k, DEF_SEG_COLOR[k])));
+  root.querySelectorAll('[name=order]').forEach((r) => r.addEventListener('change', () => { root.querySelector('.seg-order').hidden = r.value !== 'segmento' || !r.checked; }));
+  root.querySelectorAll('[data-mv]').forEach((b) => b.addEventListener('click', () => {
+    const row = b.closest('.so-row'), up = b.dataset.mv === '-1';
+    const sib = up ? row.previousElementSibling : row.nextElementSibling;
+    if (sib) up ? sib.before(row) : sib.after(row);
+  }));
+}
+
+/* ---------- Notificaciones en el celular / la compu ---------- */
+const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+function deviceName() {
+  const ua = navigator.userAgent;
+  const dev = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) || isIOS() ? 'iPad' : /Android/.test(ua) ? 'Android' : /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : 'Compu';
+  const br = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : 'Safari';
+  return isStandalone() ? `${dev} (app)` : `${dev} · ${br}`;
+}
+const keyBytes = (b64) => Uint8Array.from(atob(b64.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((b64.length + 3) % 4)), (c) => c.charCodeAt(0));
+// Al entrar: si este dispositivo ya tenía permiso, queda registrado a nombre de quien entró
+async function checkPush() {
+  S.pushHere = null;
+  if (db.DEMO || !pushSupported() || Notification.permission !== 'granted' || !CONFIG.vapidPublicKey) return;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = await reg?.pushManager.getSubscription();
+    if (!sub) return;
+    if (!S.push_subscriptions.some((r) => r.endpoint === sub.endpoint)) {
+      await db.registerPush(sub, deviceName());
+      S.push_subscriptions.push({ endpoint: sub.endpoint, device: deviceName() });
+    }
+    S.pushHere = sub.endpoint;
+    if (S.route === 'perfil' && !document.querySelector('.modal-root')) render();
+  } catch (e) { console.warn('Notificaciones:', e); }
+}
+async function enablePush() {
+  if (!CONFIG.vapidPublicKey) throw new Error('Falta la clave de notificaciones en config.js.');
+  const perm = await Notification.requestPermission();          // tiene que ser lo primero (lo pide el iPhone)
+  if (perm !== 'granted') throw new Error(perm === 'denied' ? 'Las notificaciones quedaron bloqueadas. Mirá cómo habilitarlas abajo.' : 'No se dio el permiso.');
+  const reg = await navigator.serviceWorker.ready;
+  const key = keyBytes(CONFIG.vapidPublicKey);
+  let sub = await reg.pushManager.getSubscription();
+  const cur = sub?.options?.applicationServerKey;
+  if (sub && cur && new Uint8Array(cur).join() !== key.join()) { await sub.unsubscribe(); sub = null; }
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+  await db.registerPush(sub, deviceName());
+  S.push_subscriptions = [...S.push_subscriptions.filter((r) => r.endpoint !== sub.endpoint), { endpoint: sub.endpoint, device: deviceName() }];
+  S.pushHere = sub.endpoint;
+}
+async function disablePush() {
+  const ep = S.pushHere;
+  if (ep) await db.unregisterPush(ep);
+  try { const reg = await navigator.serviceWorker.getRegistration(); const sub = await reg?.pushManager.getSubscription(); await sub?.unsubscribe(); } catch {}
+  S.push_subscriptions = S.push_subscriptions.filter((r) => r.endpoint !== ep);
+  S.pushHere = null;
+}
+function pushCard() {
+  const n = S.push_subscriptions.length;
+  let body;
+  if (db.DEMO) body = '<p class="muted small">En modo demo no se mandan notificaciones.</p>';
+  else if (!pushSupported()) body = isIOS() && !isStandalone()
+    ? `<p class="muted small">En el iPhone las notificaciones funcionan con Órbita <b>instalada</b>: en Safari tocá <b>Compartir → Agregar a inicio</b>, abrila desde ese ícono y volvé a esta pantalla.</p>`
+    : '<p class="muted small">Este navegador no permite notificaciones. Probá desde Chrome, Edge o Safari actualizados.</p>';
+  else if (Notification.permission === 'denied') body = `<p class="status bad">Bloqueadas en este dispositivo</p>
+    <p class="muted small" style="margin-top:8px">${isIOS() ? 'En el iPhone: <b>Ajustes → Notificaciones → Órbita → Permitir notificaciones</b>.' : 'Habilitalas desde el candado que está al lado de la dirección, en "Notificaciones".'}</p>`;
+  else if (S.pushHere) body = `<p><span class="status ok">${icon('check', 14)} Activadas en este dispositivo</span></p>
+    <p class="muted small" style="margin-top:8px">Te llegan los avisos de lo que tenga <b>Avisarme</b>. ${n > 1 ? `Tenés ${n} dispositivos activados.` : ''}</p>
+    <div class="btn-row"><button class="btn soft sm" data-action="push-test">${icon('bell', 15)} Mandarme una de prueba</button>
+      <button class="btn ghost sm" data-action="push-off">Desactivar acá</button></div>`;
+  else body = `<p class="muted small">Para que te lleguen los avisos (como cualquier app), activalas una vez en cada dispositivo.${n ? ` Ya están activadas en ${n} dispositivo${n > 1 ? 's' : ''}.` : ''}</p>
+    <button class="btn primary sm" data-action="push-on" style="margin-top:10px">${icon('bell', 15)} Activar notificaciones</button>`;
+  return `<div class="card"><div class="card-head"><h2>Notificaciones</h2></div>${body}</div>`;
+}
+
 function invForm(v = {}) {
   openModal({
     title: v.id ? 'Editar inversión' : 'Nueva inversión', accent: 'var(--c-cuentas)',
@@ -1471,7 +1743,8 @@ function quickAdd() {
     ['trabajo', 'item', 'Tarea de trabajo', 'briefcase'], ['trabajo', 'rec', 'Vencimiento que se repite', 'briefcase'],
     ['academico', 'item', 'Tarea académica', 'cap'], ['personal', 'turno', 'Turno médico', 'heart'],
     ['personal', 'salud', 'Recordatorio de salud', 'clock'], ['personal', 'rec', 'Cumpleaños / fecha anual', 'star'],
-    ['personal', 'item', 'Pendiente personal', 'heart'], ['personal', 'idea', 'Idea o link', 'folder'],
+    ['personal', 'item', 'Pendiente personal', 'heart'], ['personal', 'evento', 'Evento', 'star'], ['personal', 'idea', 'Idea o link', 'folder'],
+    ['bloqueo', 'block', 'Bloquear días (vacaciones, viaje)', 'sun'],
     ['cuentas', 'mov', 'Gasto o ingreso', 'wallet'],
     ['cuentas', 'rec', 'Vencimiento fijo mensual', 'cal'], ['cuentas', 'inv', 'Inversión', 'trend'],
   ];
@@ -1484,9 +1757,9 @@ function quickAdd() {
     const [seg, t] = b.dataset.q.split('|');
     closeModal();
     setTimeout(() => {
-      if (t === 'mov') movForm(); else if (t === 'inv') invForm(); else if (t === 'idea') ideaForm();
+      if (t === 'mov') movForm(); else if (t === 'inv') invForm(); else if (t === 'idea') ideaForm(); else if (t === 'block') blockForm();
       else if (t === 'rec') recForm(seg, {}, seg === 'personal' ? { kind: 'cumpleanos' } : {});
-      else itemForm(seg, {}, t === 'turno' || t === 'salud' ? { kind: t } : seg === 'personal' ? { kind: 'tramite' } : {});
+      else itemForm(seg, {}, t === 'turno' || t === 'salud' || t === 'evento' ? { kind: t } : seg === 'personal' ? { kind: 'tramite' } : {});
     }, 190);
   }));
 }
@@ -1538,6 +1811,24 @@ document.addEventListener('click', async (e) => {
       break;
     }
     case 'sel-day': S.selDay = d.date; render(); break;
+    case 'cal-settings': calSettingsForm(); break;
+    case 'new-block': blockForm({}, { date: d.date }); break;
+    case 'edit-block': { const b = find('blocks'); if (b) blockForm(b); break; }
+    case 'view-block': { const b = S.sharedBlocks.find((x) => x.id === d.id); if (b) blockView(b); break; }
+    case 'push-on':
+      el.disabled = true;
+      try { await enablePush(); render(); toast('Notificaciones activadas'); }
+      catch (err) { el.disabled = false; render(); toast(err.message || 'No se pudieron activar', true); }
+      break;
+    case 'push-off':
+      try { await disablePush(); render(); toast('Desactivadas en este dispositivo'); } catch (err) { toast(err.message || 'No se pudo', true); }
+      break;
+    case 'push-test':
+      el.disabled = true;
+      try { await db.requestTestPush(S.pushHere); toast('Pedida: te llega en menos de un minuto'); }
+      catch (err) { toast(err.message || 'No se pudo pedir', true); }
+      setTimeout(() => { el.disabled = false; }, 4000);
+      break;
     case 'cal-month': S.calMonth = shiftMonth(S.calMonth, Number(d.n)); render(); break;
     case 'cal-today': S.calMonth = monthKey(new Date()); S.selDay = todayIso(); render(); break;
     case 'new-rec': recForm(d.seg || S.route); break;
@@ -1594,6 +1885,9 @@ document.addEventListener('click', async (e) => {
       break;
     }
     case 'month': S.month = shiftMonth(S.month, Number(d.n)); render(); break;
-    case 'logout': await db.signOut(); S.user = null; location.hash = ''; renderLogin(); break;
+    case 'logout':
+      // Este dispositivo deja de recibir los avisos de quien cierra sesión
+      if (S.pushHere) { try { await db.unregisterPush(S.pushHere); } catch {} S.pushHere = null; }
+      await db.signOut(); S.user = null; location.hash = ''; renderLogin(); break;
   }
 });
