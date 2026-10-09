@@ -37,6 +37,10 @@ const CATS = ['Comida (súper, verdulería)', 'Varios (juntadas, taxis, limpieza
   'Farmacia / estudios', 'Torneo de fútbol', 'Tarjeta de crédito', 'Posgrado', 'Viajes', 'Sueldo Estudio', 'Cobros extra', 'Rendimientos financieros', 'Otros'];
 const INV_KINDS = ['Plazo fijo', 'FCI', 'Acciones', 'CEDEARs', 'Bonos', 'Cripto', 'Dólares', 'Otro'];
 // Avisos (notificaciones): cuándo avisar
+// Avisos insistentes: si no se marca listo, se repite (de 23 a 8 h no molesta)
+const NAG = [['', 'Avisar una sola vez'], ['30m', 'Repetir cada 30 min'], ['1h', 'Repetir cada 1 hora'],
+  ['3h', 'Repetir cada 3 horas']];
+const NAG_TXT = { '00:30:00': 'cada 30 min', '01:00:00': 'cada 1 hora', '03:00:00': 'cada 3 horas' };
 const REMIND = [['', 'Sin aviso'], ['at', 'A la hora del evento'], ['15m', '15 minutos antes'], ['1h', '1 hora antes'],
   ['1d', '1 día antes'], ['9am', 'El mismo día a las 9 h']];
 // Colores de la paleta (para destacar, bloqueos y segmentos)
@@ -48,7 +52,7 @@ const isHex = (c) => /^#[0-9a-f]{6}$/i.test(c || '');
 
 /* ============================== Estado ============================== */
 const S = {
-  user: null, profile: null, items: [], notes: [], movements: [], investments: [], recurring: [], workload: [], profiles: [], idea_folders: [], ideas: [], share_tokens: [], accounts: [], month_closings: [], user_settings: [], blocks: [], push_subscriptions: [], sharedItems: [], sharedRecs: [], sharedBlocks: [], ideaFolder: null, pushHere: null,
+  user: null, profile: null, items: [], notes: [], movements: [], investments: [], recurring: [], workload: [], profiles: [], idea_folders: [], ideas: [], share_tokens: [], accounts: [], month_closings: [], user_settings: [], blocks: [], push_subscriptions: [], reminder_nags: [], sharedItems: [], sharedRecs: [], sharedBlocks: [], ideaFolder: null, pushHere: null,
   route: 'resumen', tabs: {}, calMonth: monthKey(new Date()), selDay: todayIso(), month: monthKey(new Date()),
 };
 const app = $('#app');
@@ -66,7 +70,7 @@ const app = $('#app');
     S.user = await db.currentUser();
     if (S.user) await enter(); else renderLogin();
   } catch (e) { console.error(e); renderLogin(e.message); }
-  window.addEventListener('hashchange', () => { if (S.user) { readRoute(); render(); } });
+  window.addEventListener('hashchange', () => { if (S.user) { readRoute(); render(); openAviso(); } });
   // Al volver a la app (por ejemplo después de guardar algo desde Instagram), trae los datos nuevos
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshData(); });
   window.addEventListener('focus', () => refreshData());
@@ -90,6 +94,7 @@ async function enter() {
   readRoute();
   render();
   checkPush();
+  openAviso();
 }
 // Separa lo propio de lo que el otro usuario compartió (eso solo se ve en el calendario, en segundo plano)
 function splitShared() {
@@ -138,8 +143,17 @@ function catList(type) {
 }
 
 function readRoute() {
-  const r = location.hash.replace('#/', '');
+  const [r, q] = location.hash.replace('#/', '').split('?');
   S.route = SEG[r] || r === 'perfil' ? r : 'resumen';
+  const m = /(?:^|&)aviso=([^&]+)/.exec(q || '');
+  if (m) S.aviso = decodeURIComponent(m[1]);
+}
+// Si se entró tocando un aviso insistente, abre la ventanita para marcarlo listo
+function openAviso() {
+  if (!S.aviso) return;
+  const k = S.aviso; S.aviso = null;
+  history.replaceState(null, '', '#/' + S.route);
+  avisoModal(k);
 }
 const userName = () => S.profile?.display_name || CONFIG.nombres?.[S.user?.email?.toLowerCase()] ||
   cap((S.user?.email || '').split('@')[0].split(/[._]/)[0] || 'vos');
@@ -515,6 +529,7 @@ function viewResumen() {
         <div class="cal month">${DIAS.map((d) => `<span class="cal-dow">${d}</span>`).join('')}${cells}</div>
       </div>
       <div class="side-col">
+        ${nagCard()}
         <div class="card">
           <div class="card-head"><h2>${S.selDay === t ? 'Hoy' : fmtLong(S.selDay)}</h2>
             <button class="btn soft sm" data-action="new-block" data-date="${S.selDay}" title="Marcar días bloqueados (vacaciones, viaje)">${icon('sun', 15)} Bloquear días</button></div>
@@ -1273,14 +1288,16 @@ function viewInversiones() {
 
 /* ============================== Formularios ============================== */
 // "Avisarme": cuándo mandar la notificación
-function remindField(value, label = 'Avisarme (notificación)') {
-  const hint = `${S.pushHere || db.DEMO ? '' : '<b>Activá las notificaciones en Mi perfil</b> para que te lleguen a este dispositivo. '}Si no tiene hora, se toman las 9 h.`;
+function remindField(value, label = 'Avisarme (notificación)', nag = null) {
+  const hint = `${S.pushHere || db.DEMO ? '' : '<b>Activá las notificaciones en Mi perfil</b> para que te lleguen a este dispositivo. '}Si no tiene hora, se toman las 9 h.
+    Si elegís repetir, el aviso vuelve hasta que lo marques <b>Listo</b> (tocando la notificación o desde el Resumen); de 23 a 8 h no molesta.`;
   return `${field({ name: 'remind', label, type: 'select', value: value || '', options: REMIND })}
+    <div class="nag-wrap" ${value ? '' : 'hidden'}>${field({ name: 'nag', label: 'Si no lo marco listo', type: 'select', value: nag || '', options: NAG })}</div>
     <p class="remind-hint full" ${value ? '' : 'hidden'}>${icon('bell', 14)}<span>${hint}</span></p>`;
 }
 function bindRemind(root) {
-  const sel = root.querySelector('[name=remind]'), h = root.querySelector('.remind-hint');
-  if (sel && h) sel.addEventListener('change', () => { h.hidden = !sel.value; });
+  const sel = root.querySelector('[name=remind]'), h = root.querySelector('.remind-hint'), w = root.querySelector('.nag-wrap');
+  if (sel && h) sel.addEventListener('change', () => { h.hidden = !sel.value; if (w) w.hidden = !sel.value; });
 }
 // "Destacar en el calendario": color propio para que llame la atención
 function hlField(value) {
@@ -1308,7 +1325,7 @@ function itemForm(seg, item = {}, preset = {}) {
       ${field({ name: 'due_date', label: 'Fecha', type: 'date', value: item.due_date || preset.date })}
       ${field({ name: 'due_time', label: 'Hora', type: 'time', value: hhmm(item.due_time) })}
       <div class="quick-dates full"><span>Fecha rápida, desde hoy:</span>${steps.map(([k, l]) => `<button type="button" class="qd" data-step="${k}">+ ${l}</button>`).join('')}</div>
-      ${remindField(item.remind)}
+      ${remindField(item.remind, undefined, item.nag)}
       ${field({ name: 'priority', label: 'Prioridad', type: 'select', value: item.priority || 'media', options: PRIO })}
       ${field({ name: 'location', label: isTurno ? 'Profesional / lugar' : 'Lugar (opcional)', value: item.location })}
       ${field({ name: 'description', label: 'Notas', type: 'textarea', value: item.description, full: true })}
@@ -1316,6 +1333,7 @@ function itemForm(seg, item = {}, preset = {}) {
       ${db.DEMO ? '' : field({ name: 'shared', label: `Compartir con ${otherName()} (lo ve en su calendario, sin poder editarlo)`, type: 'checkbox', value: item.shared, full: true })}`,
     onSubmit: async (d) => {
       const row = { ...d, segment: seg };
+      if (!row.remind) row.nag = null;
       if (item.id) await save('items', item.id, row, true); else await add('items', row);
     },
     onDelete: item.id ? () => del('items', item.id) : null,
@@ -1362,7 +1380,7 @@ function recForm(seg, r = {}, preset = {}) {
       ${wrap('anual', field({ name: 'month', label: 'Mes', type: 'select', value: r.month || today().getMonth() + 1, options: MESES.map((m, i) => [i + 1, cap(m)]) }))}
       ${wrap('semanal', field({ name: 'weekday', label: 'Día de la semana', type: 'select', value: r.weekday ?? 0, options: DIAS_PL.map((d, i) => [i, cap(d)]) }))}
       ${field({ name: 'due_time', label: 'Hora (opcional)', type: 'time', value: hhmm(r.due_time) })}
-      ${remindField(r.remind, 'Avisarme cada vez')}
+      ${remindField(r.remind, 'Avisarme cada vez', r.nag)}
       ${seg === 'cuentas' ? `
         ${field({ name: 'amount', label: 'Monto aproximado (opcional)', type: 'number', value: r.amount, step: '0.01', inputmode: 'decimal' })}
         ${field({ name: 'currency', label: 'Moneda', type: 'select', value: r.currency || 'ARS', options: [['ARS', 'Pesos (ARS)'], ['USD', 'Dólares (USD)']] })}` : ''}
@@ -1374,6 +1392,7 @@ function recForm(seg, r = {}, preset = {}) {
       ${db.DEMO || seg === 'cuentas' ? '' : field({ name: 'shared', label: `Compartir con ${otherName()} (lo ve en su calendario)`, type: 'checkbox', value: r.shared, full: true })}`,
     onSubmit: async (d) => {
       const row = { ...d, segment: seg };
+      if (!row.remind) row.nag = null;
       if (row.freq === 'semanal') { row.weekday = Number(row.weekday); row.day_of_month = null; row.month = null; }
       else {
         row.day_of_month = Number(row.day_of_month);
@@ -1471,11 +1490,12 @@ function movForm(m = {}) {
       ${field({ name: 'currency', label: 'Moneda', type: 'select', value: m.currency || 'ARS', options: [['ARS', 'Pesos (ARS)'], ['USD', 'Dólares (USD)']] })}
       ${field({ name: 'amount', label: 'Monto', type: 'number', value: m.amount, required: true, step: '0.01', inputmode: 'decimal' })}
       ${field({ name: 'paid', label: 'Ya está pagado / cobrado (si no, queda como vencimiento en el calendario)', type: 'checkbox', value: m.id ? m.paid : true, full: true })}
-      <div class="full mov-remind" ${m.id && !m.paid ? '' : 'hidden'}><div class="form-grid">${remindField(m.remind, 'Avisarme del vencimiento')}</div></div>`,
+      <div class="full mov-remind" ${m.id && !m.paid ? '' : 'hidden'}><div class="form-grid">${remindField(m.remind, 'Avisarme del vencimiento', m.nag)}</div></div>`,
     onSubmit: async (d) => {
       d.amount = Number(String(d.amount).replace(',', '.'));
       if (!(d.amount > 0)) throw new Error('El monto tiene que ser mayor a cero.');
       if (d.paid) d.remind = null;
+      if (!d.remind) d.nag = null;
       if (m.id) await save('movements', m.id, d, true); else await add('movements', d);
       // Una categoría nueva escrita a mano queda guardada en mi lista
       const list = catList(d.type);
@@ -1596,6 +1616,61 @@ function blockView(b) {
     body: `<div class="occ full"><p class="shared-pill">${icon('users', 13)} Compartido por ${esc(otherName(b.user_id))}</p>
       <p><strong>${blkRange(b)}</strong></p>${b.notes ? `<p class="occ-notes">${esc(b.notes)}</p>` : ''}
       <p class="muted small">Solo ${esc(otherName(b.user_id))} puede modificarlo.</p></div>`,
+  });
+}
+
+/* ---------- Avisos insistentes ---------- */
+// La clave de un aviso es  tipo:id:fecha:cuándo   (i = tarea/evento, r = recurrente, m = por pagar)
+function nagRef(key) {
+  const [src, id, date] = String(key).split(':');
+  const list = src === 'i' ? S.items : src === 'r' ? S.recurring : src === 'm' ? S.movements : [];
+  const x = list.find((o) => o.id === id);
+  if (!x) return null;
+  const title = src === 'm' ? `Pagar: ${x.description || x.category || 'gasto'}` : x.title;
+  const seg = src === 'm' ? 'cuentas' : x.segment;
+  const done = src === 'i' ? x.status === 'hecho' : src === 'r' ? isDone(x, date) : !!x.paid;
+  return { src, id, date, x, title, seg, done };
+}
+const activeNags = () => S.reminder_nags.filter((n) => !n.stopped_at && nagRef(n.key) && !nagRef(n.key).done)
+  .sort((a, b) => a.occ_date.localeCompare(b.occ_date));
+async function stopNag(key) {
+  try { await db.updateWhere('reminder_nags', { key }, { stopped_at: new Date().toISOString() }); } catch (e) { console.warn(e); }
+  S.reminder_nags = S.reminder_nags.map((n) => (n.key === key ? { ...n, stopped_at: new Date().toISOString() } : n));
+}
+// Marca como listo lo que generó el aviso (tarea hecha, recurrente tildado, gasto pagado) y corta las repeticiones
+async function nagDone(key) {
+  const r = nagRef(key);
+  if (r && !r.done) {
+    if (r.src === 'i') await save('items', r.id, { status: 'hecho' });
+    else if (r.src === 'r') await toggleDone(r.id, r.date);
+    else await save('movements', r.id, { paid: true });
+  }
+  await stopNag(key); render(); toast('Listo');
+}
+function nagCard() {
+  const list = activeNags();
+  if (!list.length) return '';
+  return `<div class="card nag-card"><div class="card-head"><h2>${icon('bell', 17)} Avisos pendientes</h2><small class="muted">se repiten hasta marcarlos</small></div>
+    ${list.map((n) => { const r = nagRef(n.key); return `<div class="nag-row" style="--seg:var(--c-${r.seg})">
+      <button class="nag-main" data-action="nag-open" data-key="${esc(n.key)}"><strong>${esc(r.title)}</strong>
+        <small>${relDay(n.occ_date)} · ${NAG_TXT[n.every] || 'se repite'}</small></button>
+      <button class="btn primary sm" data-action="nag-done" data-key="${esc(n.key)}">${icon('check', 15)} Listo</button></div>`; }).join('')}</div>`;
+}
+function avisoModal(key) {
+  const r = nagRef(key);
+  if (!r) { stopNag(key); toast('Ese aviso ya no existe'); return; }
+  const nag = S.reminder_nags.find((n) => n.key === key);
+  openModal({
+    title: r.title, accent: `var(--c-${r.seg})`,
+    body: `<div class="occ full">
+      <p><strong>${fmtLong(r.date)}</strong>${r.x.due_time ? ' · ' + hhmm(r.x.due_time) : ''}</p>
+      <p class="muted">${SEG[r.seg].label}${nag && !nag.stopped_at ? ` · se repite ${NAG_TXT[nag.every] || ''} hasta que lo marques listo` : ''}</p>
+      ${r.done ? `<p class="ok">${icon('check', 15)} Ya está marcado como listo</p>` : ''}
+      <div class="btn-row">${nag && !nag.stopped_at ? `<button type="button" class="btn soft sm" data-action="nag-stop" data-key="${esc(key)}">Dejar de avisar (sin marcarlo)</button>` : ''}
+        <button type="button" class="btn ghost sm" data-action="nag-edit" data-key="${esc(key)}">Ver / editar</button></div>
+    </div>`,
+    submitLabel: r.done ? 'Cerrar' : r.src === 'm' ? 'Listo: ya lo pagué' : 'Listo',
+    onSubmit: async () => { if (!r.done) await nagDone(key); else await stopNag(key); },
   });
 }
 
@@ -1812,6 +1887,14 @@ document.addEventListener('click', async (e) => {
     }
     case 'sel-day': S.selDay = d.date; render(); break;
     case 'cal-settings': calSettingsForm(); break;
+    case 'nag-done': el.disabled = true; await nagDone(d.key); break;
+    case 'nag-open': avisoModal(d.key); break;
+    case 'nag-stop': await stopNag(d.key); closeModal(); render(); toast('Ya no te va a insistir con este aviso'); break;
+    case 'nag-edit': {
+      const r = nagRef(d.key); closeModal(); if (!r) break;
+      setTimeout(() => { if (r.src === 'i') itemForm(r.x.segment, r.x); else if (r.src === 'r') recForm(r.x.segment, r.x); else movForm(r.x); }, 190);
+      break;
+    }
     case 'new-block': blockForm({}, { date: d.date }); break;
     case 'edit-block': { const b = find('blocks'); if (b) blockForm(b); break; }
     case 'view-block': { const b = S.sharedBlocks.find((x) => x.id === d.id); if (b) blockView(b); break; }
