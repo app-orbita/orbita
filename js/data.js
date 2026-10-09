@@ -6,8 +6,8 @@ import { CONFIG } from './config.js';
 const LOCAL = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) || /[?&]demo\b/.test(location.search);
 export const DEMO = !CONFIG.supabaseUrl && LOCAL;
 export const MISCONFIG = !CONFIG.supabaseUrl && !LOCAL;
-const TABLES = ['items', 'notes', 'movements', 'investments', 'recurring', 'workload', 'profiles', 'idea_folders', 'ideas', 'share_tokens', 'accounts', 'month_closings', 'user_settings'];
-const NEW_V2 = ['recurring', 'workload', 'profiles', 'idea_folders', 'ideas', 'share_tokens', 'accounts', 'month_closings', 'user_settings']; // si todavía no se corrió el SQL v2, no rompen la app
+const TABLES = ['items', 'notes', 'movements', 'investments', 'recurring', 'workload', 'profiles', 'idea_folders', 'ideas', 'share_tokens', 'accounts', 'month_closings', 'user_settings', 'blocks', 'push_subscriptions'];
+const NEW_V2 = ['recurring', 'workload', 'profiles', 'idea_folders', 'ideas', 'share_tokens', 'accounts', 'month_closings', 'user_settings', 'blocks', 'push_subscriptions']; // si todavía no se corrió el SQL v2, no rompen la app
 let sb = null;
 
 export async function init() {
@@ -59,7 +59,7 @@ export async function loadAll() {
   res.forEach((r, i) => {
     const t = TABLES[i];
     if (r.error) {
-      if (NEW_V2.includes(t)) { console.warn(`Falta la tabla ${t}: corré supabase/v2-actualizacion.sql`); out[t] = []; return; }
+      if (NEW_V2.includes(t)) { console.warn(`Falta la tabla ${t}: corré el SQL de actualización`); out[t] = []; return; }
       throw r.error;
     }
     out[t] = r.data;
@@ -166,6 +166,25 @@ export async function setShareToken(uid, token) {
   return data;
 }
 
+/* --------------------------- Notificaciones --------------------------- */
+// Registra este dispositivo (celular o navegador) para recibir los avisos del usuario logueado
+export async function registerPush(sub, device) {
+  const j = sub.toJSON();
+  if (DEMO) { writeDemo('push_subscriptions', [{ id: crypto.randomUUID(), endpoint: j.endpoint, device }]); return; }
+  const { error } = await sb.rpc('register_push', { p_endpoint: j.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth, p_device: device });
+  if (error) throw error;
+}
+export async function unregisterPush(endpoint) {
+  if (DEMO) { writeDemo('push_subscriptions', readDemo('push_subscriptions').filter((r) => r.endpoint !== endpoint)); return; }
+  await sb.from('push_subscriptions').delete().eq('endpoint', endpoint);
+}
+export async function requestTestPush(endpoint) {
+  if (DEMO) throw new Error('En modo demo no se mandan notificaciones.');
+  const { data, error } = await sb.from('push_subscriptions').update({ test_at: new Date().toISOString() }).eq('endpoint', endpoint).select();
+  if (error) throw error;
+  if (!data?.length) throw new Error('Este dispositivo no está registrado: activá las notificaciones de nuevo.');
+}
+
 export async function changePassword(password) {
   if (DEMO) throw new Error('En modo demo no hay contraseñas.');
   const { error } = await sb.auth.updateUser({ password });
@@ -239,6 +258,9 @@ function seedDemo(uid) {
     { folder_id: f1.id, user_id: uid, url: 'https://www.pinterest.com/pin/123/', title: 'Lámpara colgante', content: 'Ver en madera clara' },
     { folder_id: f1.id, user_id: uid, title: 'Medidas del balcón', content: '3,20 m × 1,10 m\nIdea: plantas colgantes + banco angosto' },
     { folder_id: f2.id, user_id: uid, url: 'https://articulo.mercadolibre.com.ar/MLA-1', title: 'Auriculares para Juan' },
+  ].map(mk));
+  writeDemo('blocks', [
+    { title: 'Vacaciones', start_date: d(20), end_date: d(27), color: '#C0C29D', notes: 'Costa', shared: false },
   ].map(mk));
   writeDemo('investments', [
     { name: 'Plazo fijo Banco X', kind: 'Plazo fijo', currency: 'ARS', invested: 1000000, current_value: 1032000, start_date: d(-15), maturity_date: d(15), active: true },
