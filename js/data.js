@@ -23,8 +23,14 @@ export async function currentUser() {
   if (DEMO) {
     try { return JSON.parse(localStorage.getItem('orbita_demo_user')); } catch { return null; }
   }
-  const { data } = await sb.auth.getSession();
-  return data.session?.user ?? null;
+  // Si al abrir la app justo no hay conexión (pasa en el iPhone al volver del fondo), reintenta antes de pedir la clave
+  for (let i = 0; i < 3; i++) {
+    const { data, error } = await sb.auth.getSession();
+    if (data.session?.user) return data.session.user;
+    if (!error) return null;
+    await new Promise((r) => setTimeout(r, 1200));
+  }
+  return null;
 }
 
 export async function signIn(email, password) {
@@ -42,7 +48,8 @@ export async function signIn(email, password) {
 
 export async function signOut() {
   if (DEMO) { localStorage.removeItem('orbita_demo_user'); return; }
-  await sb.auth.signOut();
+  // Solo cierra la sesión de ESTE dispositivo (antes cerraba todas: salir en Safari o en la compu te sacaba también del iPhone)
+  await sb.auth.signOut({ scope: 'local' });
 }
 
 /* ------------------------------ CRUD ------------------------------ */
