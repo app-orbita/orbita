@@ -2,7 +2,7 @@
 // muestra las notificaciones (recordatorios) y ayuda a guardar la contraseña.
 // Los datos siempre se piden en línea a Supabase.
 // Si cambiás archivos de la app, subí el número de versión.
-const VERSION = 'orbita-v10';
+const VERSION = 'orbita-v11';
 const SHELL = ['./', 'index.html', 'css/styles.css', 'js/app.js', 'js/ui.js', 'js/utils.js', 'js/data.js', 'js/config.js', 'js/importer.js',
   'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
@@ -38,6 +38,8 @@ self.addEventListener('push', (e) => {
   e.waitUntil(self.registration.showNotification(d.title || 'Órbita', {
     body: d.body || '',
     tag: d.tag || undefined,
+    renotify: !!d.tag,                                     // si se repite, vuelve a sonar
+    requireInteraction: /aviso=/.test(d.url || ''),        // avisos insistentes: en la compu quedan hasta tocarlos
     icon: 'icons/icon-192.png',
     badge: 'icons/icon-192.png',
     data: { url: d.url || './' },
