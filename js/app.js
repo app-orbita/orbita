@@ -122,10 +122,25 @@ async function savePrefs(patch) {
   S.user_settings = [rec];
 }
 const boardCols = (seg) => { const c = prefs().boards?.[seg]; return c?.length ? c.map((x) => [x.key, x.label]) : DEF_COLS; };
+// Pestañas propias que crea cada usuario: { key, label, type: notas | lista | tablero | fichas }
+const TAB_TYPES = { notas: 'Notas', lista: 'Lista con fechas', tablero: 'Tablero', fichas: 'Fichas con seguimiento' };
+const TAB_HELP = { notas: 'Anotaciones libres', lista: 'Cosas con fecha: se ven en el calendario y pueden avisar (ej. Exámenes)',
+  tablero: 'Tareas en columnas: Pendiente, En curso, Hecho', fichas: 'Una ficha por persona o proyecto con historial (ej. alumnos)' };
+const customTabs = (seg) => (prefs().customTabs?.[seg] || []).filter((t) => t && t.key && TAB_TYPES[t.type]);
+const customTab = (seg, key) => customTabs(seg).find((t) => t.key === key) || null;
+const tabTypesFor = (seg) => (seg === 'cuentas' ? ['notas', 'fichas'] : ['notas', 'lista', 'tablero', 'fichas']);
+// Todas las pestañas del segmento en el orden elegido: [clave, nombre]
+function allTabs(seg) {
+  const all = [...SEG[seg].tabs, ...customTabs(seg).map((t) => [t.key, t.label])];
+  const ord = prefs().tabOrder?.[seg] || [];
+  const pos = (k) => { const i = ord.indexOf(k); return i < 0 ? 999 : i; };
+  return all.map((t, i) => [t, i]).sort((a, b) => pos(a[0][0]) - pos(b[0][0]) || a[1] - b[1]).map(([t]) => t);
+}
 function visibleTabs(seg) {
   const hid = prefs().hiddenTabs?.[seg] || [];
-  const t = SEG[seg].tabs.filter(([k]) => !hid.includes(k));
-  return t.length ? t : SEG[seg].tabs.slice(0, 1);
+  const all = allTabs(seg);
+  const t = all.filter(([k]) => !hid.includes(k));
+  return t.length ? t : all.slice(0, 1);
 }
 // Calendario: colores, orden de la lista del día y qué se muestra (cada usuario el suyo)
 const calPrefs = () => ({ order: 'hora', segOrder: SEGS4, hide: [], chips: 3, colors: {}, ...(prefs().cal || {}) });
@@ -237,6 +252,11 @@ function render() {
     S.ideaQuery = isrch.value; const pos = isrch.selectionStart; render();
     const n = $('#ideaSearch'); if (n) { n.focus(); n.setSelectionRange(pos, pos); }
   });
+  const fsrch = $('#fichaSearch');
+  if (fsrch) fsrch.addEventListener('input', () => {
+    S.fichaQuery = fsrch.value; const pos = fsrch.selectionStart; render();
+    const n = $('#fichaSearch'); if (n) { n.focus(); n.setSelectionRange(pos, pos); }
+  });
   loadPreviews();
   const xi = $('#xlsInput');
   if (xi) xi.addEventListener('change', () => { const f = xi.files?.[0]; xi.value = ''; if (f) importExcel(f); });
@@ -248,9 +268,12 @@ function view() {
   const s = SEG[S.route];
   const vt = visibleTabs(S.route);
   const tab = vt.some(([k]) => k === S.tabs[S.route]) ? S.tabs[S.route] : vt[0][0];
-  const tabs = vt.map(([k, l]) => `<button class="tab ${tab === k ? 'active' : ''}" data-action="tab" data-tab="${k}">${l}</button>`).join('');
+  const tabs = vt.map(([k, l]) => `<button class="tab ${tab === k ? 'active' : ''}" data-action="tab" data-tab="${esc(k)}">${esc(l)}</button>`).join('');
   let body = '';
-  if (tab === 'tablero') body = viewBoard(S.route);
+  const ct = customTab(S.route, tab);
+  if (ct) body = ct.type === 'notas' ? viewNotes(S.route, ct) : ct.type === 'lista' ? viewList(S.route, ct)
+    : ct.type === 'tablero' ? viewBoard(S.route, ct) : viewFichas(S.route, ct);
+  else if (tab === 'tablero') body = viewBoard(S.route);
   else if (tab === 'notas') body = viewNotes(S.route);
   else if (tab === 'salud') body = viewSalud();
   else if (tab === 'fijos') body = viewFijos(S.route);
@@ -271,6 +294,13 @@ function view() {
 }
 function primaryButton(seg, tab) {
   const b = (a, l, extra = '') => `<button class="btn primary" data-action="${a}" data-seg="${seg}" ${extra}>${icon('plus', 18)}<span>${l}</span></button>`;
+  const ct = customTab(seg, tab);
+  if (ct) {
+    const t = `data-tab="${esc(ct.key)}"`;
+    if (ct.type === 'notas') return b('new-note', 'Nueva nota', t);
+    if (ct.type === 'fichas') return b('new-ficha', 'Nueva ficha', t);
+    return b('new-item', ct.type === 'lista' ? 'Agregar' : 'Nueva tarea', t);
+  }
   if (tab === 'notas') return b('new-note', 'Nueva nota');
   if (tab === 'salud') return `<div class="btn-group gap">
     <button class="btn soft" data-action="new-item" data-seg="personal" data-kind="salud">${icon('clock', 18)}<span>Recordatorio</span></button>
@@ -351,7 +381,7 @@ function events(from, to) {
   const ev = [];
   const inR = (d) => d && d >= from && d <= to;
   for (const it of S.items) if (inR(it.due_date)) ev.push({
-    date: it.due_date, time: hhmm(it.due_time), title: it.title, seg: it.segment, tag: KIND[it.kind] || '', kind: it.kind,
+    date: it.due_date, time: hhmm(it.due_time), title: it.title, seg: it.segment, tag: (it.tab && customTab(it.segment, it.tab)?.label) || KIND[it.kind] || '', kind: it.kind,
     done: it.status === 'hecho', type: 'item', id: it.id, hl: hlColor(it.highlight, it.segment), hk: hlInk(it.highlight, it.segment), remind: it.remind });
   for (const m of S.movements) if (!m.paid && inR(m.date)) ev.push({
     date: m.date, title: `Pagar: ${m.description || m.category || 'gasto'}`, sub: money(m.amount, m.currency),
@@ -552,10 +582,11 @@ function viewResumen() {
 
 /* ============================== Tablero ============================== */
 const prioRank = { alta: 0, media: 1, baja: 2 };
-function viewBoard(seg) {
-  const its = S.items.filter((i) => i.segment === seg && !(seg === 'personal' && (i.kind === 'turno' || i.kind === 'salud')));
+function viewBoard(seg, ct = null) {
+  const tk = ct ? ct.key : null;
+  const its = S.items.filter((i) => i.segment === seg && (i.tab || null) === tk && !(!ct && seg === 'personal' && (i.kind === 'turno' || i.kind === 'salud')));
   const t = todayIso();
-  const C = boardCols(seg);
+  const C = ct ? DEF_COLS : boardCols(seg);
   const keys = C.map(([k]) => k);
   const colOf = (i) => (keys.includes(i.status) ? i.status : keys[0]);
   const cols = C.map(([st, label], ci) => {
@@ -579,7 +610,7 @@ function viewBoard(seg) {
     return `<div class="col" data-status="${st}">
       <div class="col-head"><span class="st st-${['pendiente', 'en_curso', 'hecho'].includes(st) ? st : 'custom'}"></span>${esc(label)}<span class="count">${list.length}</span></div>
       <div class="col-body">${cards || '<p class="empty sm">Arrastrá tarjetas acá</p>'}</div>
-      ${st !== 'hecho' ? `<button class="add-inline" data-action="new-item" data-seg="${seg}" data-status="${st}">${icon('plus', 16)} Agregar</button>` : ''}
+      ${st !== 'hecho' ? `<button class="add-inline" data-action="new-item" data-seg="${seg}" data-status="${st}" ${tk ? `data-tab="${esc(tk)}"` : ''}>${icon('plus', 16)} Agregar</button>` : ''}
     </div>`;
   }).join('');
   return `<div class="board" style="--cols:${C.length}">${cols}</div>`;
@@ -605,7 +636,7 @@ function bindDnD() {
 /* ============================== Salud (turnos + recordatorios) ============================== */
 function viewSalud() {
   const t = todayIso();
-  const all = S.items.filter((i) => i.segment === 'personal' && (i.kind === 'turno' || i.kind === 'salud'));
+  const all = S.items.filter((i) => i.segment === 'personal' && !i.tab && (i.kind === 'turno' || i.kind === 'salud'));
   const up = all.filter((i) => i.status !== 'hecho' && (!i.due_date || i.due_date >= t))
     .sort((a, b) => (a.due_date || '9999').localeCompare(b.due_date || '9999'));
   const past = all.filter((i) => !up.includes(i)).sort((a, b) => (b.due_date || '').localeCompare(a.due_date || '')).slice(0, 12);
@@ -988,12 +1019,134 @@ function shortcutHelp() {
   });
 }
 
+/* ============================== Pestañas propias: Lista con fechas ============================== */
+function viewList(seg, ct) {
+  const t = todayIso();
+  const all = S.items.filter((i) => i.segment === seg && i.tab === ct.key);
+  const up = all.filter((i) => i.status !== 'hecho' && (!i.due_date || i.due_date >= t))
+    .sort((a, b) => ((a.due_date || '9999') + (a.due_time || '')).localeCompare((b.due_date || '9999') + (b.due_time || '')));
+  const past = all.filter((i) => !up.includes(i)).sort((a, b) => (b.due_date || '').localeCompare(a.due_date || '')).slice(0, 30);
+  const card = (i) => {
+    const d = i.due_date ? parse(i.due_date) : null;
+    const done = i.status === 'hecho';
+    return `<div class="turno list-item ${done ? 'is-done' : ''}" data-action="edit-item" data-id="${i.id}" role="button" tabindex="0">
+      <span class="date-block">${d ? `<small>${DIAS[(d.getDay() + 6) % 7]}</small><b>${d.getDate()}</b><small>${MESES[d.getMonth()].slice(0, 3)}${d.getFullYear() !== new Date().getFullYear() ? ' ' + String(d.getFullYear()).slice(2) : ''}</small>` : '<b>—</b>'}</span>
+      <span class="turno-main"><span class="tag">${esc(KIND[i.kind] || ct.label)}</span><strong>${esc(i.title)}</strong>
+        ${i.location ? `<small>${icon('pin', 14)}${esc(i.location)}</small>` : ''}
+        ${i.description ? `<small class="muted">${esc(i.description.slice(0, 90))}</small>` : ''}</span>
+      <span class="turno-side">${i.due_time ? `<span class="pill">${icon('clock', 14)}${hhmm(i.due_time)}</span>` : ''}
+        ${i.remind ? `<span class="ev-bell" title="Con aviso">${icon('bell', 14)}</span>` : ''}
+        ${i.due_date ? `<small>${relDay(i.due_date)}</small>` : ''}
+        <button class="icon-btn sm" data-action="toggle-item" data-id="${i.id}" data-status="${done ? 'pendiente' : 'hecho'}" title="${done ? 'Volver a pendiente' : 'Marcar hecho'}">${icon(done ? 'undo' : 'check', 16)}</button></span>
+    </div>`;
+  };
+  return `
+    <p class="hint">Todo lo que cargues acá con fecha aparece en el calendario y puede mandarte avisos.</p>
+    <div class="turnos">${up.length ? up.map(card).join('') : `<div class="card empty-card">${icon('cal', 28)}<p>No hay nada próximo en ${esc(ct.label)}.</p>
+      <button class="btn soft" data-action="new-item" data-seg="${seg}" data-tab="${esc(ct.key)}">Agregar</button></div>`}</div>
+    ${past.length ? `<h2 class="section-title">Anteriores o hechos</h2><div class="turnos past">${past.map(card).join('')}</div>` : ''}`;
+}
+
+/* ============================== Pestañas propias: Fichas con seguimiento ============================== */
+const ENTRY_ST = [['', 'Sin tarea'], ['pendiente', 'Pendiente de revisar'], ['hecha', 'Hecha'], ['parcial', 'A medias'], ['no', 'No la hizo']];
+const ENTRY_LBL = { pendiente: 'Pendiente', hecha: 'Hecha', parcial: 'A medias', no: 'No la hizo' };
+const entriesOf = (f) => [...(Array.isArray(f.entries) ? f.entries : [])].sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.at || '').localeCompare(a.at || ''));
+function viewFichas(seg, ct) {
+  const q = (S.fichaQuery || '').toLowerCase().trim();
+  const all = S.notes.filter((n) => n.segment === seg && n.tab === ct.key).sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+  const txt = (f) => [f.title, f.content, f.meta?.nivel, f.meta?.horario, f.meta?.objetivo, ...(f.entries || []).map((e) => `${e.did || ''} ${e.task || ''}`)].join(' ').toLowerCase();
+  const list = q ? all.filter((f) => txt(f).includes(q)) : all;
+  const card = (f) => {
+    const es = entriesOf(f); const last = es[0];
+    const pend = es.filter((e) => e.status === 'pendiente').length;
+    const bad = es.slice(0, 3).filter((e) => e.status === 'no').length;
+    return `<button class="ficha" data-action="open-ficha" data-id="${f.id}">
+      <span class="ficha-av">${esc((f.title || '?').trim()[0] || '?').toUpperCase()}</span>
+      <span class="ficha-main"><strong>${esc(f.title)}</strong>
+        <small>${[f.meta?.nivel, f.meta?.horario].filter(Boolean).map(esc).join(' · ') || '&nbsp;'}</small>
+        <small class="muted">${last ? `Último registro: ${relDay(last.date).toLowerCase()}${last.did ? ' · ' + esc(last.did.slice(0, 60)) : ''}` : 'Sin registros todavía'}</small></span>
+      <span class="ficha-side">${pend ? `<span class="st-pill pendiente">${pend} pendiente${pend > 1 ? 's' : ''}</span>` : ''}${bad ? `<span class="st-pill no">${bad} sin hacer</span>` : ''}</span>
+    </button>`;
+  };
+  return `
+    <p class="hint">Una ficha por persona o proyecto. Adentro registrás cada clase o encuentro: qué se trabajó, qué tarea quedó y cómo le fue.</p>
+    ${all.length > 3 ? `<div class="idea-search"><input id="fichaSearch" type="search" placeholder="Buscar en ${esc(ct.label)}…" value="${esc(S.fichaQuery || '')}"></div>` : ''}
+    <div class="fichas">${list.length ? list.map(card).join('') : q ? `<p class="empty">Nada coincide con "${esc(S.fichaQuery)}".</p>`
+      : `<div class="card empty-card">${icon('users', 28)}<p>Todavía no hay fichas en ${esc(ct.label)}.</p>
+      <button class="btn soft" data-action="new-ficha" data-seg="${seg}" data-tab="${esc(ct.key)}">Crear la primera</button></div>`}</div>`;
+}
+function fichaForm(seg, tabKey, f = {}) {
+  const ct = customTab(seg, tabKey);
+  const m = f.meta || {};
+  openModal({
+    title: f.id ? `Editar ficha` : `Nueva ficha · ${ct ? ct.label : ''}`, accent: SEG[seg].color,
+    body: `${field({ name: 'title', label: 'Nombre', value: f.title, required: true, full: true, placeholder: 'Ej: Sofía Gómez' })}
+      ${field({ name: 'nivel', label: 'Nivel / tipo', value: m.nivel, placeholder: 'Ej: B1 intermedio' })}
+      ${field({ name: 'horario', label: 'Día y horario', value: m.horario, placeholder: 'Ej: martes 18 h' })}
+      ${field({ name: 'objetivo', label: 'Objetivo', value: m.objetivo, full: true, placeholder: 'Ej: preparar el First en diciembre' })}
+      ${field({ name: 'content', label: 'Notas generales', type: 'textarea', value: f.content, full: true })}`,
+    onSubmit: async (d) => {
+      const row = { title: d.title, content: d.content, meta: { nivel: d.nivel, horario: d.horario, objetivo: d.objetivo } };
+      if (f.id) { await save('notes', f.id, row, true); fichaView(S.notes.find((x) => x.id === f.id)); return; }
+      const rec = await db.insert('notes', { ...row, segment: seg, tab: tabKey, entries: [] });
+      S.notes.push(rec); render(); toast('Ficha creada');
+      setTimeout(() => fichaView(rec), 200);
+    },
+    onDelete: f.id ? () => del('notes', f.id) : null,
+  });
+}
+function fichaView(f) {
+  if (!f) return;
+  const m = f.meta || {}; const es = entriesOf(f);
+  setTimeout(() => openModal({
+    title: f.title, wide: true, accent: SEG[f.segment].color,
+    body: `<div class="full ficha-view">
+      <div class="ficha-data">
+        ${m.nivel ? `<span><small>Nivel</small>${esc(m.nivel)}</span>` : ''}${m.horario ? `<span><small>Horario</small>${esc(m.horario)}</span>` : ''}
+        ${m.objetivo ? `<span class="wide"><small>Objetivo</small>${esc(m.objetivo)}</span>` : ''}
+        ${f.content ? `<span class="wide"><small>Notas</small><em>${esc(f.content)}</em></span>` : ''}
+      </div>
+      <div class="btn-row"><button type="button" class="btn primary sm" data-action="new-entry" data-id="${f.id}">${icon('plus', 15)} Registrar clase</button>
+        <button type="button" class="btn ghost sm" data-action="edit-ficha" data-id="${f.id}">${icon('edit', 14)} Editar datos</button></div>
+      <h4 class="sub" style="margin-top:16px">Historial (${es.length})</h4>
+      ${es.length ? `<div class="entries">${es.map((e) => `<button type="button" class="entry" data-action="edit-entry" data-id="${f.id}" data-entry="${esc(e.id)}">
+        <span class="entry-date"><b>${parse(e.date).getDate()}</b><small>${MESES[parse(e.date).getMonth()].slice(0, 3)}</small></span>
+        <span class="entry-main">${e.did ? `<strong>${esc(e.did)}</strong>` : ''}${e.task ? `<small>Tarea: ${esc(e.task)}</small>` : ''}${e.note ? `<small class="muted">${esc(e.note)}</small>` : ''}</span>
+        ${e.status ? `<span class="st-pill ${e.status}">${ENTRY_LBL[e.status] || ''}</span>` : ''}</button>`).join('')}</div>`
+        : '<p class="empty">Todavía no registraste ninguna clase.</p>'}
+    </div>`,
+  }), 0);
+}
+function entryForm(f, e = null) {
+  openModal({
+    title: e ? 'Editar registro' : `Registrar · ${f.title}`, accent: SEG[f.segment].color,
+    body: `${field({ name: 'date', label: 'Fecha', type: 'date', value: e?.date || todayIso(), required: true })}
+      ${field({ name: 'status', label: 'Tarea / actividad', type: 'select', value: e?.status || '', options: ENTRY_ST })}
+      ${field({ name: 'did', label: 'Qué se trabajó', type: 'textarea', value: e?.did, full: true, placeholder: 'Ej: Past simple, lectura cap. 3' })}
+      ${field({ name: 'task', label: 'Tarea que quedó (opcional)', value: e?.task, full: true, placeholder: 'Ej: ejercicios 4 a 7, pág. 32' })}
+      ${field({ name: 'note', label: 'Comentario (opcional)', value: e?.note, full: true, placeholder: 'Ej: le cuesta la pronunciación' })}
+      <p class="muted small full">Para actualizar cómo le fue con la tarea, volvé a abrir este registro y cambiá el estado.</p>`,
+    submitLabel: e ? 'Guardar' : 'Registrar',
+    onSubmit: async (d) => {
+      const entry = { id: e?.id || Math.random().toString(36).slice(2, 10), date: d.date, status: d.status, did: d.did, task: d.task, note: d.note, at: e?.at || new Date().toISOString() };
+      const entries = [...(f.entries || []).filter((x) => x.id !== entry.id), entry];
+      await save('notes', f.id, { entries }, true);
+      fichaView(S.notes.find((x) => x.id === f.id));
+    },
+    onDelete: e ? async () => {
+      await save('notes', f.id, { entries: (f.entries || []).filter((x) => x.id !== e.id) });
+      fichaView(S.notes.find((x) => x.id === f.id));
+    } : null,
+  });
+}
+
 /* ============================== Notas ============================== */
-function viewNotes(seg) {
-  const ns = S.notes.filter((n) => n.segment === seg)
+function viewNotes(seg, ct = null) {
+  const tk = ct ? ct.key : null;
+  const ns = S.notes.filter((n) => n.segment === seg && (n.tab || null) === tk)
     .sort((a, b) => (b.pinned - a.pinned) || (b.updated_at || '').localeCompare(a.updated_at || ''));
   return `<div class="notes">
-    <button class="note new" data-action="new-note" data-seg="${seg}">${icon('plus', 22)}<span>Nueva nota</span></button>
+    <button class="note new" data-action="new-note" data-seg="${seg}" ${tk ? `data-tab="${esc(tk)}"` : ''}>${icon('plus', 22)}<span>Nueva nota</span></button>
     ${ns.map((n) => `<button class="note ${n.pinned ? 'pinned' : ''}" data-action="edit-note" data-id="${n.id}">
       ${n.pinned ? `<span class="pin-ico">${icon('star', 14)}</span>` : ''}
       <h4>${esc(n.title)}</h4><p>${esc((n.content || '').slice(0, 220))}</p>
@@ -1310,18 +1463,23 @@ function hlField(value) {
 }
 function itemForm(seg, item = {}, preset = {}) {
   const s = SEG[seg];
-  const kind = item.kind || preset.kind || s.kinds[0];
+  const tk = item.id ? item.tab : preset.tab;
+  const ct = tk ? customTab(seg, tk) : null;
+  const isList = ct?.type === 'lista';
+  const kind = item.kind || preset.kind || (isList && seg === 'academico' ? 'examen' : isList ? 'evento' : s.kinds[0]);
   const isTurno = kind === 'turno' || kind === 'salud';
   const steps = [['d7', '1 semana'], ['m1', '1 mes'], ['m3', '3 meses'], ['m6', '6 meses'], ['m12', '1 año']];
   const root = openModal({
-    title: item.id ? `Editar · ${KIND[kind] || 'Tarea'}` : kind === 'turno' ? 'Nuevo turno médico'
+    title: item.id ? `Editar · ${ct ? ct.label : KIND[kind] || 'Tarea'}` : ct ? `Nuevo en ${ct.label}` : kind === 'turno' ? 'Nuevo turno médico'
       : kind === 'salud' ? 'Nuevo recordatorio de salud' : `Nuevo en ${s.label}`,
     accent: s.color,
     body: `
+      ${!item.id && tk ? `<input type="hidden" name="tab" value="${esc(tk)}">` : ''}
       ${field({ name: 'title', label: isTurno ? 'Especialidad / motivo' : 'Título', value: item.title, required: true, full: true,
-        placeholder: kind === 'salud' ? 'Ej: Endocrinología — repetir análisis' : isTurno ? 'Ej: Dermatología — control anual' : '' })}
+        placeholder: kind === 'salud' ? 'Ej: Endocrinología — repetir análisis' : isTurno ? 'Ej: Dermatología — control anual' : isList ? (seg === 'academico' ? 'Ej: Parcial de Finanzas' : 'Ej: ...') : '' })}
       ${field({ name: 'kind', label: 'Tipo', type: 'select', value: kind, options: s.kinds.map((k) => [k, KIND[k]]) })}
-      ${field({ name: 'status', label: 'Columna', type: 'select', value: item.status || preset.status || boardCols(seg)[0][0], options: boardCols(seg) })}
+      ${isList ? `<label class="check" style="align-self:end;padding-bottom:12px"><input type="checkbox" name="__done" ${item.status === 'hecho' ? 'checked' : ''}><span>Ya pasó / hecho</span></label>`
+        : field({ name: 'status', label: 'Columna', type: 'select', value: item.status || preset.status || (ct ? DEF_COLS : boardCols(seg))[0][0], options: ct ? DEF_COLS : boardCols(seg) })}
       ${field({ name: 'due_date', label: 'Fecha', type: 'date', value: item.due_date || preset.date })}
       ${field({ name: 'due_time', label: 'Hora', type: 'time', value: hhmm(item.due_time) })}
       <div class="quick-dates full"><span>Fecha rápida, desde hoy:</span>${steps.map(([k, l]) => `<button type="button" class="qd" data-step="${k}">+ ${l}</button>`).join('')}</div>
@@ -1334,6 +1492,7 @@ function itemForm(seg, item = {}, preset = {}) {
     onSubmit: async (d) => {
       const row = { ...d, segment: seg };
       if (!row.remind) row.nag = null;
+      if ('__done' in row) { row.status = row.__done ? 'hecho' : 'pendiente'; delete row.__done; }
       if (item.id) await save('items', item.id, row, true); else await add('items', row);
     },
     onDelete: item.id ? () => del('items', item.id) : null,
@@ -1466,10 +1625,13 @@ function workForm(w = {}) {
   }));
 }
 
-function noteForm(seg, n = {}) {
+function noteForm(seg, n = {}, preset = {}) {
+  const tk = n.id ? n.tab : preset.tab;
+  const ct = tk ? customTab(seg, tk) : null;
   openModal({
-    title: n.id ? 'Editar nota' : `Nueva nota · ${SEG[seg].label}`, wide: true, accent: SEG[seg].color,
-    body: `${field({ name: 'title', label: 'Título', value: n.title, required: true, full: true })}
+    title: n.id ? 'Editar nota' : `Nueva nota · ${ct ? ct.label : SEG[seg].label}`, wide: true, accent: SEG[seg].color,
+    body: `${!n.id && tk ? `<input type="hidden" name="tab" value="${esc(tk)}">` : ''}
+      ${field({ name: 'title', label: 'Título', value: n.title, required: true, full: true })}
       ${field({ name: 'content', label: 'Contenido', type: 'textarea', value: n.content, full: 'xl', placeholder: 'Escribí libremente…' })}
       ${field({ name: 'pinned', label: 'Fijar arriba', type: 'checkbox', value: n.pinned })}`,
     onSubmit: async (d) => { const row = { ...d, segment: seg }; if (n.id) await save('notes', n.id, row, true); else await add('notes', row); },
@@ -1530,9 +1692,18 @@ function customizeForm(seg) {
   const root = openModal({
     title: `Personalizar ${s.label}`, accent: s.color, wide: true,
     body: `<p class="muted small full">Estos cambios son solo para vos: ${esc(otherName())} no ve ninguna diferencia.</p>
-      <div class="full"><h4 class="sub">Pestañas que querés ver</h4>
-        <div class="tab-checks">${s.tabs.map(([k, l]) => `<label class="check"><input type="checkbox" name="tab_${k}" ${hid.includes(k) ? '' : 'checked'}><span>${l}</span></label>`).join('')}</div>
-        <p class="muted small">Ocultar una pestaña no borra nada: si la volvés a activar, está todo como lo dejaste.</p></div>
+      <div class="full"><h4 class="sub">Pestañas</h4>
+        <div class="tab-rows">${allTabs(seg).map(([k, l]) => { const c = customTab(seg, k); return `<div class="tab-row" data-tabkey="${esc(k)}">
+          <label class="check sm" title="Mostrar"><input type="checkbox" name="tab_${esc(k)}" ${hid.includes(k) ? '' : 'checked'}><span></span></label>
+          ${c ? `<input class="tab-name" name="tabname_${esc(k)}" value="${esc(l)}" maxlength="24"><small class="tab-type">${TAB_TYPES[c.type]}</small>`
+            : `<span class="tab-name fixed">${esc(l)}</span><small class="tab-type">de Órbita</small>`}
+          <span class="tab-moves"><button type="button" class="icon-btn sm" data-mv="-1" aria-label="Subir">${icon('up', 15)}</button><button type="button" class="icon-btn sm" data-mv="1" aria-label="Bajar">${icon('down', 15)}</button></span>
+          ${c ? `<label class="check sm danger-check"><input type="checkbox" name="tabdel_${esc(k)}"><span>Quitar</span></label>` : '<span></span>'}
+        </div>`; }).join('')}</div>
+        <div class="tab-new"><input name="tabnew_name" placeholder="Nueva pestaña (ej: Exámenes, Alumnos)" maxlength="24">
+          <select name="tabnew_type">${tabTypesFor(seg).map((t) => `<option value="${t}">${TAB_TYPES[t]}</option>`).join('')}</select></div>
+        <p class="muted small tab-help">${tabTypesFor(seg).map((t) => `<b>${TAB_TYPES[t]}:</b> ${TAB_HELP[t]}`).join(' · ')}</p>
+        <p class="muted small">Destildar oculta la pestaña sin borrar nada. Si quitás una pestaña tuya, lo que tenía pasa a "Notas" o al "Tablero" del segmento: no se pierde.</p></div>
       ${hasBoard ? `<div class="full"><h4 class="sub">Columnas del tablero</h4>
         ${C.map(([k, l], i) => `<div class="edit-row"><input name="col_${i}" value="${esc(l)}" data-key="${k}" maxlength="24">
           ${k === 'hecho' ? '<small class="muted">siempre está (marca lo terminado)</small>'
@@ -1543,11 +1714,22 @@ function customizeForm(seg) {
         ${catRows(type)}
         <div class="edit-row"><input name="catnew_${type}" placeholder="Nueva categoría"><span></span></div></div>`).join('')
         + '<p class="muted small full">Si renombrás una categoría, también se actualizan tus movimientos que la usan. Quitarla solo la saca de la lista: los movimientos viejos no se tocan.</p>' : ''}`,
-    onSubmit: async (d) => {
+    onSubmit: async (d, form) => {
+      // Pestañas propias: renombrar, quitar y agregar; orden según la lista
+      const removed = customTabs(seg).filter((c) => d['tabdel_' + c.key]);
+      let cts = customTabs(seg).filter((c) => !d['tabdel_' + c.key]).map((c) => ({ ...c, label: (d['tabname_' + c.key] || '').trim() || c.label }));
+      let order = [...form.querySelectorAll('[data-tabkey]')].map((x) => x.dataset.tabkey).filter((k) => !removed.some((c) => c.key === k));
+      const nn = (d.tabnew_name || '').trim();
+      if (nn) {
+        const nk = 'u_' + Math.random().toString(36).slice(2, 8);
+        cts.push({ key: nk, label: nn, type: tabTypesFor(seg).includes(d.tabnew_type) ? d.tabnew_type : 'notas' });
+        order.push(nk); S.tabs[seg] = nk;
+      }
+      const all = [...s.tabs.map(([k]) => k), ...cts.map((c) => c.key)];
       const hiddenTabs = { ...(prefs().hiddenTabs || {}) };
-      hiddenTabs[seg] = s.tabs.filter(([k]) => !d['tab_' + k]).map(([k]) => k);
-      if (hiddenTabs[seg].length === s.tabs.length) throw new Error('Dejá al menos una pestaña visible.');
-      const patch = { hiddenTabs };
+      hiddenTabs[seg] = all.filter((k) => ('tab_' + k) in d && !d['tab_' + k]);
+      if (all.every((k) => hiddenTabs[seg].includes(k))) throw new Error('Dejá al menos una pestaña visible.');
+      const patch = { hiddenTabs, customTabs: { ...(prefs().customTabs || {}), [seg]: cts }, tabOrder: { ...(prefs().tabOrder || {}), [seg]: order } };
       if (hasBoard) {
         let cols = C.map(([k], i) => ({ key: k, label: (d['col_' + i] || '').trim() || C[i][1], del: !!d['coldel_' + i] })).filter((c) => !c.del).map(({ key, label }) => ({ key, label }));
         if (d.col_new) {
@@ -1576,6 +1758,13 @@ function customizeForm(seg) {
         patch.categories = categories;
       }
       await savePrefs(patch);
+      // Lo que tenía una pestaña quitada vuelve a la vista general del segmento (no se borra)
+      for (const c of removed) {
+        await db.updateWhere('notes', { tab: c.key }, { tab: null });
+        await db.updateWhere('items', { tab: c.key }, { tab: null });
+        S.notes.forEach((n) => { if (n.tab === c.key) n.tab = null; });
+        S.items.forEach((i) => { if (i.tab === c.key) i.tab = null; });
+      }
       for (const [type, old, nv] of renames) {
         await db.updateWhere('movements', { type, category: old }, { category: nv });
         S.movements.forEach((m) => { if (m.type === type && m.category === old) m.category = nv; });
@@ -1583,6 +1772,11 @@ function customizeForm(seg) {
       render(); toast('Listo, guardado solo para vos');
     },
   });
+  root.querySelectorAll('.tab-row [data-mv]').forEach((b) => b.addEventListener('click', () => {
+    const row = b.closest('.tab-row'), up = b.dataset.mv === '-1';
+    const sib = up ? row.previousElementSibling : row.nextElementSibling;
+    if (sib) up ? sib.before(row) : sib.after(row);
+  }));
   return root;
 }
 
@@ -1863,14 +2057,21 @@ document.addEventListener('click', async (e) => {
   const d = el.dataset;
   const find = (t) => S[t].find((r) => r.id === d.id);
   switch (d.action) {
-    case 'tab': S.tabs[S.route] = d.tab; render(); break;
+    case 'tab': S.tabs[S.route] = d.tab; S.fichaQuery = ''; render(); break;
     case 'customize': customizeForm(d.seg || S.route); break;
     case 'quick-add': quickAdd(); break;
-    case 'new-item': itemForm(d.seg, {}, { kind: d.kind || (d.seg === 'personal' ? 'tramite' : undefined), status: d.status }); break;
+    case 'new-item': itemForm(d.seg, {}, { kind: d.kind || (d.seg === 'personal' && !d.tab ? 'tramite' : undefined), status: d.status, tab: d.tab }); break;
     case 'edit-item': { const it = find('items'); if (it) itemForm(it.segment, it); break; }
     case 'move-item': e.stopPropagation(); save('items', d.id, { status: d.status }); break;
-    case 'new-note': noteForm(d.seg); break;
+    case 'new-note': noteForm(d.seg, {}, { tab: d.tab }); break;
+    case 'new-ficha': fichaForm(d.seg, d.tab); break;
+    case 'open-ficha': { const f = find('notes'); if (f) fichaView(f); break; }
+    case 'edit-ficha': { const f = find('notes'); if (f) { closeModal(); setTimeout(() => fichaForm(f.segment, f.tab, f), 190); } break; }
+    case 'new-entry': { const f = find('notes'); if (f) { closeModal(); setTimeout(() => entryForm(f), 190); } break; }
+    case 'edit-entry': { const f = find('notes'); if (f) { closeModal(); setTimeout(() => entryForm(f, (f.entries || []).find((x) => x.id === d.entry)), 190); } break; }
+    case 'toggle-item': e.stopPropagation(); save('items', d.id, { status: d.status }); break;
     case 'edit-note': { const n = find('notes'); if (n) noteForm(n.segment, n); break; }
+    case 'fichas-q': break;
     case 'new-mov': movForm(); break;
     case 'edit-mov': movForm(find('movements')); break;
     case 'pay-mov': save('movements', d.id, { paid: true }, true); break;
