@@ -740,3 +740,58 @@ h4.sub { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; colo
 .nag-main { flex: 1; min-width: 0; display: grid; text-align: left; }
 .nag-main strong { font-weight: 700; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nag-main small { color: var(--muted); font-size: 12.5px; }
+
+/* v12 · Pestañas propias */
+.tab-rows { display: grid; gap: 6px; margin: 4px 0 10px; }
+.tab-row { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto auto auto; align-items: center; gap: 8px; padding: 6px 8px; background: var(--surface-2); border-radius: 12px; }
+.tab-row .check span:empty { display: none; }
+.tab-name { min-width: 0; font-weight: 650; font-size: 14px; }
+input.tab-name { width: 100%; border: 1.5px solid var(--line-2); background: #fff; border-radius: 10px; padding: 7px 10px; font-size: 16px; outline: none; }
+input.tab-name:focus { border-color: var(--accent, var(--teal)); }
+.tab-type { font-size: 11.5px; color: var(--muted); font-weight: 650; white-space: nowrap; }
+.tab-moves { display: inline-flex; }
+.danger-check span { color: var(--neg); }
+.tab-new { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin-bottom: 8px; }
+.tab-new input, .tab-new select { min-width: 0; border: 1.5px dashed var(--line-2); background: #fff; border-radius: 12px; padding: 10px 12px; font-size: 16px; outline: none; }
+.tab-new select { border-style: solid; font-size: 14px; font-weight: 650; }
+.tab-help { margin-bottom: 6px; }
+.list-item { cursor: pointer; text-align: left; }
+.list-item .date-block { background: var(--seg, var(--teal)); }
+.list-item .tag { --seg: inherit; }
+.list-item.is-done { opacity: .6; }
+.list-item.is-done strong { text-decoration: line-through; }
+.fichas { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.ficha { display: flex; align-items: center; gap: 14px; background: var(--surface); border-radius: var(--radius); padding: 14px 16px; border: 1px solid var(--line); box-shadow: var(--shadow); width: 100%; text-align: left; transition: transform .15s; }
+.ficha:hover { transform: translateY(-2px); }
+.ficha-av { width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 18px; flex-shrink: 0;
+  background: color-mix(in srgb, var(--seg) 18%, #fff); color: var(--seg); }
+.ficha-main { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.ficha-main strong { font-size: 15px; font-weight: 750; }
+.ficha-main small { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ficha-main small.muted { color: var(--muted); }
+.ficha-side { display: grid; gap: 4px; justify-items: end; }
+.st-pill { display: inline-block; font-size: 11.5px; font-weight: 750; padding: 3px 9px; border-radius: 999px; white-space: nowrap; background: var(--surface-2); color: var(--muted); }
+.st-pill.pendiente { background: #F7EBCB; color: #8A6420; }
+.st-pill.hecha { background: #DCEADF; color: var(--pos); }
+.st-pill.parcial { background: #ECEBD8; color: var(--olive); }
+.st-pill.no { background: #F6DED3; color: var(--neg); }
+.ficha-data { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+.ficha-data span { background: var(--surface-2); border-radius: 12px; padding: 8px 12px; font-size: 14px; font-weight: 650; display: grid; }
+.ficha-data span.wide { grid-column: 1 / -1; }
+.ficha-data small { font-size: 11.5px; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.ficha-data em { font-style: normal; font-weight: 500; white-space: pre-line; }
+.entries { display: grid; gap: 6px; margin-top: 6px; }
+.entry { display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 12px; border: 1px solid var(--line); background: #fff; width: 100%; text-align: left; }
+.entry:hover { border-color: var(--line-2); }
+.entry-date { width: 42px; display: grid; justify-items: center; line-height: 1.05; flex-shrink: 0; }
+.entry-date b { font-size: 18px; font-weight: 800; }
+.entry-date small { font-size: 11px; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+.entry-main { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.entry-main strong { font-size: 14px; font-weight: 650; white-space: pre-line; }
+.entry-main small { font-size: 12.5px; }
+@media (max-width: 860px) {
+  .fichas { grid-template-columns: 1fr; gap: 10px; }
+  .tab-row { grid-template-columns: 26px minmax(0, 1fr) auto auto; }
+  .tab-row .tab-type { display: none; }
+  .ficha-data { grid-template-columns: 1fr; }
+}
